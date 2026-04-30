@@ -27,30 +27,61 @@ struct ProcessTrafficEntry: Identifiable, Equatable {
     }
 }
 
+enum ProcessTrafficSamplingState: Equatable {
+    case idle
+    case warming
+    case live
+    case stale
+    case failed
+}
+
 @MainActor
 final class ProcessTrafficMonitor: ObservableObject {
     @Published private(set) var topEntries: [ProcessTrafficEntry] = []
-    @Published private(set) var statusText = "打开面板后开始分析进程流量"
+    @Published private(set) var statusText = "进程流量监控未启动"
+    @Published private(set) var freshnessText = "已暂停"
     @Published private(set) var lastUpdatedAt: Date?
+    @Published private(set) var samplingState: ProcessTrafficSamplingState = .idle
 
     private let samplingInterval: Double = 1.0
+    private let freshnessWindow: TimeInterval = 3.0
     private var process: Process?
     private var outputPipe: Pipe?
     private var errorPipe: Pipe?
+    private var freshnessTimer: Timer?
+    private var restartWorkItem: DispatchWorkItem?
     private var activeSessionID = UUID()
     private var outputBuffer = ""
     private var currentSampleEntries: [ProcessTrafficEntry] = []
+    private var hasOpenSample = false
     private var didSkipBaselineSample = false
     private var errorBuffer = ""
+    private var wantsWarmSampling = false
+    private var consecutiveFailures = 0
 
     func start() {
+        startWarmSampling()
+    }
+
+    func startWarmSampling() {
+        wantsWarmSampling = true
+        restartWorkItem?.cancel()
+        restartWorkItem = nil
+        startFreshnessTimer()
+        refreshFreshnessState()
+
         guard process == nil else { return }
 
-        topEntries = []
-        statusText = "正在分析高流量进程..."
-        lastUpdatedAt = nil
+        if !Self.isFresh(lastUpdatedAt: lastUpdatedAt, now: Date(), window: freshnessWindow) {
+            topEntries = []
+            samplingState = .warming
+            statusText = "正在预热高流量进程..."
+            freshnessText = "正在预热"
+        }
+
         outputBuffer = ""
         currentSampleEntries.removeAll()
+        hasOpenSample = false
         didSkipBaselineSample = false
         errorBuffer = ""
         let sessionID = UUID()
@@ -61,7 +92,7 @@ final class ProcessTrafficMonitor: ObservableObject {
         let errorPipe = Pipe()
 
         process.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
-        process.arguments = ["-P", "-x", "-d", "-s", String(Int(samplingInterval)), "-L", "0"]
+        process.arguments = ["-P", "-n", "-x", "-d", "-s", String(Int(samplingInterval)), "-L", "0"]
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
@@ -72,7 +103,7 @@ final class ProcessTrafficMonitor: ObservableObject {
                 guard self.activeSessionID == sessionID else { return }
 
                 guard !data.isEmpty else {
-                    self.finishCurrentSample()
+                    self.finishOpenSample()
                     return
                 }
 
@@ -93,18 +124,24 @@ final class ProcessTrafficMonitor: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard self.activeSessionID == sessionID else { return }
-                self.finishCurrentSample()
+                self.finishOpenSample()
                 self.outputPipe?.fileHandleForReading.readabilityHandler = nil
                 self.errorPipe?.fileHandleForReading.readabilityHandler = nil
                 self.process = nil
                 self.outputPipe = nil
                 self.errorPipe = nil
 
-                if terminatedProcess.terminationReason != .exit || terminatedProcess.terminationStatus != 0 {
-                    if self.topEntries.isEmpty {
-                        let reason = self.errorBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
-                        self.statusText = reason.isEmpty ? "无法读取进程流量" : "无法读取进程流量：\(reason)"
-                    }
+                guard self.wantsWarmSampling else { return }
+
+                let didFail = terminatedProcess.terminationReason != .exit || terminatedProcess.terminationStatus != 0
+                if didFail {
+                    let reason = self.errorBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.handleSamplingFailure(reason: reason)
+                } else {
+                    self.samplingState = .stale
+                    self.statusText = "进程流量监控已停止，正在重新启动..."
+                    self.freshnessText = "正在重启"
+                    self.scheduleRestart()
                 }
             }
         }
@@ -117,11 +154,82 @@ final class ProcessTrafficMonitor: ObservableObject {
         } catch {
             outputPipe.fileHandleForReading.readabilityHandler = nil
             errorPipe.fileHandleForReading.readabilityHandler = nil
-            statusText = "无法启动进程监控"
+            handleSamplingFailure(reason: "")
         }
     }
 
-    func stop() {
+    func stop(clearEntries: Bool = true) {
+        wantsWarmSampling = false
+        restartWorkItem?.cancel()
+        restartWorkItem = nil
+        freshnessTimer?.invalidate()
+        freshnessTimer = nil
+        stopRunningProcess()
+
+        if clearEntries {
+            topEntries = []
+            statusText = "进程流量监控未启动"
+            freshnessText = "已暂停"
+            lastUpdatedAt = nil
+            samplingState = .idle
+        } else {
+            markSamplesStale(statusText: "进程流量监控已暂停", freshnessText: "已暂停")
+        }
+    }
+
+    func pauseForSleep() {
+        stop(clearEntries: false)
+        statusText = "睡眠中，已暂停进程流量"
+    }
+
+    func resumeAfterWake() {
+        startWarmSampling()
+    }
+
+    func refreshFreshnessState(now: Date = Date()) {
+        if let lastUpdatedAt {
+            if Self.isFresh(lastUpdatedAt: lastUpdatedAt, now: now, window: freshnessWindow) {
+                samplingState = .live
+                statusText = topEntries.isEmpty ? "当前没有明显的进程流量" : "实时统计系统进程流量"
+                freshnessText = Self.freshnessText(lastUpdatedAt: lastUpdatedAt, now: now)
+                return
+            }
+
+            markSamplesStale(statusText: "正在重新获取进程流量...", freshnessText: "正在更新")
+            return
+        }
+
+        if samplingState == .failed {
+            return
+        }
+
+        if process == nil && !wantsWarmSampling {
+            samplingState = .idle
+            statusText = "进程流量监控未启动"
+            freshnessText = "已暂停"
+        } else {
+            samplingState = .warming
+            statusText = "正在预热高流量进程..."
+            freshnessText = "正在预热"
+        }
+    }
+
+    func recordDisplaySampleForTesting(_ entries: [ProcessTrafficEntry], at date: Date) {
+        recordDisplaySample(entries, at: date)
+    }
+
+    nonisolated static func isFresh(lastUpdatedAt: Date?, now: Date, window: TimeInterval = 3.0) -> Bool {
+        guard let lastUpdatedAt else { return false }
+        return now.timeIntervalSince(lastUpdatedAt) <= window
+    }
+
+    nonisolated static func freshnessText(lastUpdatedAt: Date, now: Date) -> String {
+        let age = max(0, now.timeIntervalSince(lastUpdatedAt))
+        guard age >= 1 else { return "实时更新" }
+        return "更新于 \(Int(age)) 秒前"
+    }
+
+    private func stopRunningProcess() {
         activeSessionID = UUID()
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         errorPipe?.fileHandleForReading.readabilityHandler = nil
@@ -135,11 +243,9 @@ final class ProcessTrafficMonitor: ObservableObject {
         errorPipe = nil
         outputBuffer = ""
         currentSampleEntries.removeAll()
+        hasOpenSample = false
         didSkipBaselineSample = false
         errorBuffer = ""
-        topEntries = []
-        statusText = "打开面板后开始分析进程流量"
-        lastUpdatedAt = nil
     }
 
     nonisolated static func parseProcessLabel(_ rawValue: String) -> (name: String, pid: Int?) {
@@ -259,17 +365,26 @@ final class ProcessTrafficMonitor: ObservableObject {
 
     private func parse(line: String) {
         if Self.isCSVHeader(line) {
-            finishCurrentSample()
+            if hasOpenSample {
+                finishCurrentSample()
+            } else {
+                hasOpenSample = true
+            }
             return
         }
 
         guard let row = Self.parseCSVRow(line) else { return }
+        hasOpenSample = true
         currentSampleEntries.append(row.entry)
     }
 
-    private func finishCurrentSample() {
-        guard !currentSampleEntries.isEmpty else { return }
+    private func finishOpenSample() {
+        guard hasOpenSample else { return }
+        finishCurrentSample()
+        hasOpenSample = false
+    }
 
+    private func finishCurrentSample() {
         let filteredEntries = Self.topEntries(from: currentSampleEntries)
         currentSampleEntries.removeAll()
 
@@ -278,8 +393,61 @@ final class ProcessTrafficMonitor: ObservableObject {
             return
         }
 
-        topEntries = filteredEntries
-        lastUpdatedAt = Date()
-        statusText = topEntries.isEmpty ? "当前没有明显的进程流量" : "仅统计当前面板打开时的系统进程流量"
+        recordDisplaySample(filteredEntries, at: Date())
+    }
+
+    private func recordDisplaySample(_ entries: [ProcessTrafficEntry], at date: Date) {
+        consecutiveFailures = 0
+        topEntries = entries
+        lastUpdatedAt = date
+        samplingState = .live
+        statusText = topEntries.isEmpty ? "当前没有明显的进程流量" : "实时统计系统进程流量"
+        freshnessText = "实时更新"
+    }
+
+    private func startFreshnessTimer() {
+        guard freshnessTimer == nil else { return }
+        freshnessTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshFreshnessState()
+            }
+        }
+    }
+
+    private func markSamplesStale(statusText: String, freshnessText: String) {
+        topEntries = []
+        lastUpdatedAt = nil
+        samplingState = .stale
+        self.statusText = statusText
+        self.freshnessText = freshnessText
+    }
+
+    private func handleSamplingFailure(reason: String) {
+        consecutiveFailures += 1
+        topEntries = []
+        lastUpdatedAt = nil
+        samplingState = .failed
+        let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        statusText = trimmedReason.isEmpty ? "无法读取进程流量" : "无法读取进程流量：\(trimmedReason)"
+        freshnessText = "暂不可用"
+        scheduleRestart()
+    }
+
+    private func scheduleRestart() {
+        guard wantsWarmSampling else { return }
+
+        restartWorkItem?.cancel()
+        let delay = min(30.0, pow(2.0, Double(min(consecutiveFailures, 4))))
+        let workItem = DispatchWorkItem { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.wantsWarmSampling else { return }
+                self.samplingState = .warming
+                self.statusText = "正在重新获取进程流量..."
+                self.freshnessText = "正在重试"
+                self.startWarmSampling()
+            }
+        }
+        restartWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 }

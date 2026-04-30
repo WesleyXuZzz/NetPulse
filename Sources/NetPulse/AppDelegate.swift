@@ -89,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         bindPreferences()
         bindLifecycleEvents()
         trafficMonitor.start()
+        processTrafficMonitor.startWarmSampling()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -235,6 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.trafficMonitor.handleSystemWillSleep()
+                self?.processTrafficMonitor.pauseForSleep()
             }
             .store(in: &cancellables)
 
@@ -242,6 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.trafficMonitor.handleSystemDidWake()
+                self?.processTrafficMonitor.resumeAfterWake()
                 self?.launchAtLoginController.refreshStatus()
             }
             .store(in: &cancellables)
@@ -403,7 +406,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         trafficMonitor.refreshNow()
         launchAtLoginController.refreshStatus()
-        processTrafficMonitor.start()
+        processTrafficMonitor.refreshFreshnessState()
         positionSettingsPanel(relativeTo: button, panel: settingsPanel)
         settingsPanel.orderFrontRegardless()
         settingsPanel.makeKey()
@@ -515,7 +518,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func closeSettingsPanel() {
         settingsPanel?.orderOut(nil)
-        processTrafficMonitor.stop()
         removeOutsideClickMonitors()
     }
 

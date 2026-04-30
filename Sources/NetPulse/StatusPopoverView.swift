@@ -395,13 +395,7 @@ struct StatusPopoverView: View {
     }
 
     private var processPanelFootnote: String {
-        if let lastUpdatedAt = processMonitor.lastUpdatedAt {
-            let formatter = RelativeDateTimeFormatter()
-            formatter.unitsStyle = .short
-            return formatter.localizedString(for: lastUpdatedAt, relativeTo: Date())
-        }
-
-        return "1 秒刷新"
+        processMonitor.freshnessText
     }
 
     @ViewBuilder

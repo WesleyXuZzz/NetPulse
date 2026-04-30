@@ -199,6 +199,58 @@ func processTrafficParserGroupsRowsByHeadersAndSkipsBaselineSample() async throw
 }
 
 @Test
+@MainActor
+func processTrafficMonitorKeepsFreshSamplesVisible() async throws {
+    let monitor = ProcessTrafficMonitor()
+    let now = Date()
+    let entry = ProcessTrafficEntry(
+        name: "Safari",
+        pid: 42,
+        downloadBytesPerSecond: 2048,
+        uploadBytesPerSecond: 1024
+    )
+
+    monitor.recordDisplaySampleForTesting([entry], at: now)
+    monitor.refreshFreshnessState(now: now.addingTimeInterval(2))
+
+    #expect(monitor.topEntries == [entry])
+    #expect(monitor.samplingState == .live)
+    #expect(monitor.statusText == "实时统计系统进程流量")
+    #expect(monitor.freshnessText == "更新于 2 秒前")
+}
+
+@Test
+@MainActor
+func processTrafficMonitorHidesStaleSamples() async throws {
+    let monitor = ProcessTrafficMonitor()
+    let now = Date()
+    let entry = ProcessTrafficEntry(
+        name: "Safari",
+        pid: 42,
+        downloadBytesPerSecond: 2048,
+        uploadBytesPerSecond: 1024
+    )
+
+    monitor.recordDisplaySampleForTesting([entry], at: now.addingTimeInterval(-4))
+    monitor.refreshFreshnessState(now: now)
+
+    #expect(monitor.topEntries.isEmpty)
+    #expect(monitor.samplingState == .stale)
+    #expect(monitor.statusText == "正在重新获取进程流量...")
+    #expect(monitor.freshnessText == "正在更新")
+}
+
+@Test
+func processTrafficFreshnessHelpersDescribeRecentSamples() async throws {
+    let now = Date()
+
+    #expect(ProcessTrafficMonitor.isFresh(lastUpdatedAt: now.addingTimeInterval(-3), now: now))
+    #expect(!ProcessTrafficMonitor.isFresh(lastUpdatedAt: now.addingTimeInterval(-3.1), now: now))
+    #expect(ProcessTrafficMonitor.freshnessText(lastUpdatedAt: now.addingTimeInterval(-0.5), now: now) == "实时更新")
+    #expect(ProcessTrafficMonitor.freshnessText(lastUpdatedAt: now.addingTimeInterval(-2), now: now) == "更新于 2 秒前")
+}
+
+@Test
 func settingsPanelLayoutShrinksToVisibleFrameWhenPreferredHeightDoesNotFit() async throws {
     let visibleFrame = NSRect(x: 0, y: 80, width: 1440, height: 720)
     let statusItemFrame = NSRect(x: 980, y: 812, width: 120, height: 22)
