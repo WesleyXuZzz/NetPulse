@@ -36,10 +36,12 @@ final class ProcessTrafficMonitor: ObservableObject {
     private let samplingInterval: Double = 1.0
     private var process: Process?
     private var outputPipe: Pipe?
+    private var errorPipe: Pipe?
     private var activeSessionID = UUID()
     private var outputBuffer = ""
-    private var currentSampleTime: String?
     private var currentSampleEntries: [ProcessTrafficEntry] = []
+    private var didSkipBaselineSample = false
+    private var errorBuffer = ""
 
     func start() {
         guard process == nil else { return }
@@ -48,18 +50,20 @@ final class ProcessTrafficMonitor: ObservableObject {
         statusText = "正在分析高流量进程..."
         lastUpdatedAt = nil
         outputBuffer = ""
-        currentSampleTime = nil
         currentSampleEntries.removeAll()
+        didSkipBaselineSample = false
+        errorBuffer = ""
         let sessionID = UUID()
         activeSessionID = sessionID
 
         let process = Process()
         let outputPipe = Pipe()
+        let errorPipe = Pipe()
 
         process.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
         process.arguments = ["-P", "-x", "-d", "-s", String(Int(samplingInterval)), "-L", "0"]
         process.standardOutput = outputPipe
-        process.standardError = Pipe()
+        process.standardError = errorPipe
 
         outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
@@ -76,17 +80,30 @@ final class ProcessTrafficMonitor: ObservableObject {
             }
         }
 
+        errorPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard self.activeSessionID == sessionID else { return }
+                self.consumeError(data: data)
+            }
+        }
+
         process.terminationHandler = { [weak self] terminatedProcess in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard self.activeSessionID == sessionID else { return }
+                self.finishCurrentSample()
                 self.outputPipe?.fileHandleForReading.readabilityHandler = nil
+                self.errorPipe?.fileHandleForReading.readabilityHandler = nil
                 self.process = nil
                 self.outputPipe = nil
+                self.errorPipe = nil
 
                 if terminatedProcess.terminationReason != .exit || terminatedProcess.terminationStatus != 0 {
                     if self.topEntries.isEmpty {
-                        self.statusText = "无法读取进程流量"
+                        let reason = self.errorBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+                        self.statusText = reason.isEmpty ? "无法读取进程流量" : "无法读取进程流量：\(reason)"
                     }
                 }
             }
@@ -96,8 +113,10 @@ final class ProcessTrafficMonitor: ObservableObject {
             try process.run()
             self.process = process
             self.outputPipe = outputPipe
+            self.errorPipe = errorPipe
         } catch {
             outputPipe.fileHandleForReading.readabilityHandler = nil
+            errorPipe.fileHandleForReading.readabilityHandler = nil
             statusText = "无法启动进程监控"
         }
     }
@@ -105,6 +124,7 @@ final class ProcessTrafficMonitor: ObservableObject {
     func stop() {
         activeSessionID = UUID()
         outputPipe?.fileHandleForReading.readabilityHandler = nil
+        errorPipe?.fileHandleForReading.readabilityHandler = nil
 
         if let process, process.isRunning {
             process.terminate()
@@ -112,9 +132,11 @@ final class ProcessTrafficMonitor: ObservableObject {
 
         self.process = nil
         outputPipe = nil
+        errorPipe = nil
         outputBuffer = ""
-        currentSampleTime = nil
         currentSampleEntries.removeAll()
+        didSkipBaselineSample = false
+        errorBuffer = ""
         topEntries = []
         statusText = "打开面板后开始分析进程流量"
         lastUpdatedAt = nil
@@ -136,7 +158,7 @@ final class ProcessTrafficMonitor: ObservableObject {
     }
 
     nonisolated static func parseCSVRow(_ line: String) -> (sampleTime: String, entry: ProcessTrafficEntry)? {
-        guard !line.isEmpty, !line.hasPrefix("time,") else { return nil }
+        guard !line.isEmpty, !isCSVHeader(line) else { return nil }
 
         let columns = line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
         guard columns.count > 5 else { return nil }
@@ -161,6 +183,58 @@ final class ProcessTrafficMonitor: ObservableObject {
         )
     }
 
+    nonisolated static func isCSVHeader(_ line: String) -> Bool {
+        line.hasPrefix("time,")
+    }
+
+    nonisolated static func topEntries(from entries: [ProcessTrafficEntry]) -> [ProcessTrafficEntry] {
+        entries
+            .filter { $0.totalBytesPerSecond > 0 }
+            .filter { $0.name != "nettop" && $0.name != "NetPulse" }
+            .sorted { lhs, rhs in
+                if lhs.totalBytesPerSecond == rhs.totalBytesPerSecond {
+                    return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+                }
+
+                return lhs.totalBytesPerSecond > rhs.totalBytesPerSecond
+            }
+            .prefix(3)
+            .map { $0 }
+    }
+
+    nonisolated static func parseDisplaySamples(from csv: String, skipsBaselineSample: Bool = true) -> [[ProcessTrafficEntry]] {
+        var currentSampleEntries: [ProcessTrafficEntry] = []
+        var samples: [[ProcessTrafficEntry]] = []
+        var didSkipBaselineSample = false
+
+        func finishSample() {
+            guard !currentSampleEntries.isEmpty else { return }
+            let entries = topEntries(from: currentSampleEntries)
+            currentSampleEntries.removeAll()
+
+            if skipsBaselineSample && !didSkipBaselineSample {
+                didSkipBaselineSample = true
+                return
+            }
+
+            samples.append(entries)
+        }
+
+        for rawLine in csv.split(whereSeparator: \.isNewline) {
+            let line = String(rawLine)
+            if isCSVHeader(line) {
+                finishSample()
+                continue
+            }
+
+            guard let row = parseCSVRow(line) else { continue }
+            currentSampleEntries.append(row.entry)
+        }
+
+        finishSample()
+        return samples
+    }
+
     private func consume(data: Data) {
         guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
 
@@ -173,35 +247,39 @@ final class ProcessTrafficMonitor: ObservableObject {
         }
     }
 
-    private func parse(line: String) {
-        guard let row = Self.parseCSVRow(line) else { return }
+    private func consumeError(data: Data) {
+        guard !data.isEmpty else { return }
+        guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
 
-        if let currentSampleTime, row.sampleTime != currentSampleTime {
+        errorBuffer += text
+        if errorBuffer.count > 160 {
+            errorBuffer = String(errorBuffer.suffix(160))
+        }
+    }
+
+    private func parse(line: String) {
+        if Self.isCSVHeader(line) {
             finishCurrentSample()
-            currentSampleEntries.removeAll()
+            return
         }
 
-        currentSampleTime = row.sampleTime
+        guard let row = Self.parseCSVRow(line) else { return }
         currentSampleEntries.append(row.entry)
     }
 
     private func finishCurrentSample() {
-        let filteredEntries = currentSampleEntries
-            .filter { $0.totalBytesPerSecond > 0 }
-            .filter { $0.name != "nettop" && $0.name != "NetPulse" }
-            .sorted { lhs, rhs in
-                if lhs.totalBytesPerSecond == rhs.totalBytesPerSecond {
-                    return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
-                }
+        guard !currentSampleEntries.isEmpty else { return }
 
-                return lhs.totalBytesPerSecond > rhs.totalBytesPerSecond
-            }
+        let filteredEntries = Self.topEntries(from: currentSampleEntries)
+        currentSampleEntries.removeAll()
 
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.topEntries = Array(filteredEntries.prefix(3))
-            self.lastUpdatedAt = Date()
-            self.statusText = self.topEntries.isEmpty ? "当前没有明显的进程流量" : "仅统计当前面板打开时的系统进程流量"
+        if !didSkipBaselineSample {
+            didSkipBaselineSample = true
+            return
         }
+
+        topEntries = filteredEntries
+        lastUpdatedAt = Date()
+        statusText = topEntries.isEmpty ? "当前没有明显的进程流量" : "仅统计当前面板打开时的系统进程流量"
     }
 }
