@@ -252,7 +252,7 @@ func processTrafficMonitorKeepsFreshSamplesVisible() async throws {
 
 @Test
 @MainActor
-func processTrafficMonitorHidesStaleSamples() async throws {
+func processTrafficMonitorKeepsRecentlyStaleSamplesVisible() async throws {
     let monitor = ProcessTrafficMonitor()
     let now = Date()
     let entry = ProcessTrafficEntry(
@@ -265,10 +265,52 @@ func processTrafficMonitorHidesStaleSamples() async throws {
     monitor.recordDisplaySampleForTesting([entry], at: now.addingTimeInterval(-4))
     monitor.refreshFreshnessState(now: now)
 
+    #expect(monitor.topEntries == [entry])
+    #expect(monitor.samplingState == .stale)
+    #expect(monitor.statusText == "正在获取新的进程流量")
+    #expect(monitor.freshnessText == "更新于 4 秒前")
+}
+
+@Test
+@MainActor
+func processTrafficMonitorHidesExpiredStaleSamples() async throws {
+    let monitor = ProcessTrafficMonitor()
+    let now = Date()
+    let entry = ProcessTrafficEntry(
+        name: "Safari",
+        pid: 42,
+        downloadBytesPerSecond: 2048,
+        uploadBytesPerSecond: 1024
+    )
+
+    monitor.recordDisplaySampleForTesting([entry], at: now.addingTimeInterval(-16))
+    monitor.refreshFreshnessState(now: now)
+
     #expect(monitor.topEntries.isEmpty)
     #expect(monitor.samplingState == .stale)
     #expect(monitor.statusText == "正在重新获取进程流量...")
     #expect(monitor.freshnessText == "正在更新")
+}
+
+@Test
+@MainActor
+func processTrafficMonitorPreservesRecentSamplesWhenPausedWithoutClearing() async throws {
+    let monitor = ProcessTrafficMonitor()
+    let now = Date()
+    let entry = ProcessTrafficEntry(
+        name: "Safari",
+        pid: 42,
+        downloadBytesPerSecond: 2048,
+        uploadBytesPerSecond: 1024
+    )
+
+    monitor.recordDisplaySampleForTesting([entry], at: now.addingTimeInterval(-4))
+    monitor.stop(clearEntries: false)
+    monitor.refreshFreshnessState(now: now)
+
+    #expect(monitor.topEntries == [entry])
+    #expect(monitor.samplingState == .stale)
+    #expect(monitor.freshnessText == "更新于 4 秒前")
 }
 
 @Test
@@ -277,6 +319,8 @@ func processTrafficFreshnessHelpersDescribeRecentSamples() async throws {
 
     #expect(ProcessTrafficMonitor.isFresh(lastUpdatedAt: now.addingTimeInterval(-3), now: now))
     #expect(!ProcessTrafficMonitor.isFresh(lastUpdatedAt: now.addingTimeInterval(-3.1), now: now))
+    #expect(ProcessTrafficMonitor.canRetainStaleDisplay(lastUpdatedAt: now.addingTimeInterval(-15), now: now))
+    #expect(!ProcessTrafficMonitor.canRetainStaleDisplay(lastUpdatedAt: now.addingTimeInterval(-15.1), now: now))
     #expect(ProcessTrafficMonitor.freshnessText(lastUpdatedAt: now.addingTimeInterval(-0.5), now: now) == "实时更新")
     #expect(ProcessTrafficMonitor.freshnessText(lastUpdatedAt: now.addingTimeInterval(-2), now: now) == "更新于 2 秒前")
 }

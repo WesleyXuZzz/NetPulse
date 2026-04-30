@@ -45,6 +45,7 @@ final class ProcessTrafficMonitor: ObservableObject {
 
     private let samplingInterval: Double = 1.0
     private let freshnessWindow: TimeInterval = 3.0
+    private let staleDisplayWindow: TimeInterval = 15.0
     private var process: Process?
     private var outputPipe: Pipe?
     private var errorPipe: Pipe?
@@ -73,11 +74,14 @@ final class ProcessTrafficMonitor: ObservableObject {
 
         guard process == nil else { return }
 
-        if !Self.isFresh(lastUpdatedAt: lastUpdatedAt, now: Date(), window: freshnessWindow) {
-            topEntries = []
-            samplingState = .warming
-            statusText = "正在预热高流量进程..."
-            freshnessText = "正在预热"
+        let now = Date()
+        if !Self.isFresh(lastUpdatedAt: lastUpdatedAt, now: now, window: freshnessWindow),
+           !Self.canRetainStaleDisplay(lastUpdatedAt: lastUpdatedAt, now: now, window: staleDisplayWindow) {
+            clearSamplesForUnavailable(
+                statusText: "正在预热高流量进程...",
+                freshnessText: "正在预热",
+                samplingState: .warming
+            )
         }
 
         outputBuffer = ""
@@ -204,7 +208,19 @@ final class ProcessTrafficMonitor: ObservableObject {
                 return
             }
 
-            markSamplesStale(statusText: "正在重新获取进程流量...", freshnessText: "正在更新")
+            if Self.canRetainStaleDisplay(lastUpdatedAt: lastUpdatedAt, now: now, window: staleDisplayWindow) {
+                if topEntries.isEmpty {
+                    markSamplesStale(statusText: "正在重新获取进程流量...", freshnessText: "正在更新")
+                } else {
+                    markSamplesStale(
+                        statusText: "正在获取新的进程流量",
+                        freshnessText: Self.freshnessText(lastUpdatedAt: lastUpdatedAt, now: now)
+                    )
+                }
+                return
+            }
+
+            clearSamplesForUnavailable(statusText: "正在重新获取进程流量...", freshnessText: "正在更新")
             return
         }
 
@@ -228,6 +244,11 @@ final class ProcessTrafficMonitor: ObservableObject {
     }
 
     nonisolated static func isFresh(lastUpdatedAt: Date?, now: Date, window: TimeInterval = 3.0) -> Bool {
+        guard let lastUpdatedAt else { return false }
+        return now.timeIntervalSince(lastUpdatedAt) <= window
+    }
+
+    nonisolated static func canRetainStaleDisplay(lastUpdatedAt: Date?, now: Date, window: TimeInterval = 15.0) -> Bool {
         guard let lastUpdatedAt else { return false }
         return now.timeIntervalSince(lastUpdatedAt) <= window
     }
@@ -457,9 +478,19 @@ final class ProcessTrafficMonitor: ObservableObject {
     }
 
     private func markSamplesStale(statusText: String, freshnessText: String) {
+        samplingState = .stale
+        self.statusText = statusText
+        self.freshnessText = freshnessText
+    }
+
+    private func clearSamplesForUnavailable(
+        statusText: String,
+        freshnessText: String,
+        samplingState: ProcessTrafficSamplingState = .stale
+    ) {
         topEntries = []
         lastUpdatedAt = nil
-        samplingState = .stale
+        self.samplingState = samplingState
         self.statusText = statusText
         self.freshnessText = freshnessText
     }
