@@ -17,6 +17,44 @@ enum SpeedFormatter {
         format(bytesPerSecond, unitStyle: .expanded, trimsTrailingZero: false)
     }
 
+    static func totalBytes(_ bytes: UInt64) -> String {
+        totalBytes(Double(bytes))
+    }
+
+    static func totalBytes(_ bytes: Int) -> String {
+        totalBytes(Double(max(0, bytes)))
+    }
+
+    static func totalBytes(_ bytes: Double) -> String {
+        let safeValue = bytes.isFinite ? max(0, bytes) : 0
+        if safeValue < 1 {
+            return "0 B"
+        }
+
+        let units = ["B", "KB", "MB", "GB", "TB", "PB"]
+        var value = safeValue
+        var unitIndex = 0
+
+        while value >= 1024, unitIndex < units.count - 1 {
+            value /= 1024
+            unitIndex += 1
+        }
+
+        let decimals: Int
+        if unitIndex == 0 {
+            decimals = 0
+        } else if value < 10 {
+            decimals = 1
+        } else if value < 100 {
+            decimals = 1
+        } else {
+            decimals = 0
+        }
+
+        let formattedValue = value.formatted(.number.precision(.fractionLength(decimals)))
+        return "\(formattedValue) \(units[unitIndex])"
+    }
+
     private static func format(_ bytesPerSecond: Double, unitStyle: UnitStyle, trimsTrailingZero: Bool) -> String {
         let safeValue = bytesPerSecond.isFinite ? max(0, bytesPerSecond) : 0
         if safeValue < 1 {

@@ -145,6 +145,8 @@ enum ProcessTrafficSamplingState: Equatable {
     case failed
 }
 
+typealias AppTrafficSampleHandler = @MainActor (_ entries: [ProcessTrafficEntry], _ date: Date, _ sampleInterval: TimeInterval) -> Void
+
 @MainActor
 final class ProcessTrafficMonitor: ObservableObject {
     @Published private(set) var topEntries: [ProcessTrafficEntry] = []
@@ -152,6 +154,7 @@ final class ProcessTrafficMonitor: ObservableObject {
     @Published private(set) var freshnessText = "已暂停"
     @Published private(set) var lastUpdatedAt: Date?
     @Published private(set) var samplingState: ProcessTrafficSamplingState = .idle
+    var appTrafficSampleHandler: AppTrafficSampleHandler?
 
     private let samplingInterval: Double = 1.0
     private let freshnessWindow: TimeInterval = 3.0
@@ -355,6 +358,18 @@ final class ProcessTrafficMonitor: ObservableObject {
         recordDisplaySample(entries, at: date)
     }
 
+    func recordProcessSampleForTesting(_ entries: [ProcessTrafficEntry], at date: Date) {
+        let aggregatedEntries = Self.aggregatedEntries(from: entries)
+
+        if !didSkipBaselineSample {
+            didSkipBaselineSample = true
+            return
+        }
+
+        appTrafficSampleHandler?(aggregatedEntries, date, samplingInterval)
+        recordDisplaySample(Array(aggregatedEntries.prefix(3)), at: date)
+    }
+
     nonisolated static func isFresh(lastUpdatedAt: Date?, now: Date, window: TimeInterval = 3.0) -> Bool {
         guard let lastUpdatedAt else { return false }
         return now.timeIntervalSince(lastUpdatedAt) <= window
@@ -456,6 +471,13 @@ final class ProcessTrafficMonitor: ObservableObject {
         from entries: [ProcessTrafficEntry],
         applicationIdentityFor: (ProcessTrafficEntry) -> ProcessTrafficApplicationIdentity? = { _ in nil }
     ) -> [ProcessTrafficEntry] {
+        Array(aggregatedEntries(from: entries, applicationIdentityFor: applicationIdentityFor).prefix(3))
+    }
+
+    nonisolated static func aggregatedEntries(
+        from entries: [ProcessTrafficEntry],
+        applicationIdentityFor: (ProcessTrafficEntry) -> ProcessTrafficApplicationIdentity? = { _ in nil }
+    ) -> [ProcessTrafficEntry] {
         var aggregates: [String: ProcessTrafficAggregate] = [:]
 
         for entry in entries {
@@ -494,8 +516,6 @@ final class ProcessTrafficMonitor: ObservableObject {
 
                 return lhs.totalBytesPerSecond > rhs.totalBytesPerSecond
             }
-            .prefix(3)
-            .map { $0 }
     }
 
     nonisolated static func parseDisplaySamples(from csv: String, skipsBaselineSample: Bool = true) -> [[ProcessTrafficEntry]] {
@@ -591,7 +611,7 @@ final class ProcessTrafficMonitor: ObservableObject {
     }
 
     private func finishCurrentSample() {
-        let filteredEntries = Self.topEntries(from: currentSampleEntries) { [self] entry in
+        let aggregatedEntries = Self.aggregatedEntries(from: currentSampleEntries) { [self] entry in
             applicationIdentity(for: entry)
         }
         currentSampleEntries.removeAll()
@@ -601,7 +621,9 @@ final class ProcessTrafficMonitor: ObservableObject {
             return
         }
 
-        recordDisplaySample(filteredEntries, at: Date())
+        let sampleDate = Date()
+        appTrafficSampleHandler?(aggregatedEntries, sampleDate, samplingInterval)
+        recordDisplaySample(Array(aggregatedEntries.prefix(3)), at: sampleDate)
     }
 
     private func recordDisplaySample(_ entries: [ProcessTrafficEntry], at date: Date) {

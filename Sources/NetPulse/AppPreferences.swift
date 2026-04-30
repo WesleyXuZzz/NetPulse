@@ -77,6 +77,11 @@ final class AppPreferences: ObservableObject {
             defaults.set(downloadAlertDuration.rawValue, forKey: Keys.downloadAlertDuration)
         }
     }
+    @Published var appTrafficHistoryEnabled: Bool {
+        didSet {
+            defaults.set(appTrafficHistoryEnabled, forKey: Keys.appTrafficHistoryEnabled)
+        }
+    }
 
     private let defaults: UserDefaults
 
@@ -99,6 +104,8 @@ final class AppPreferences: ObservableObject {
 
         let storedDownloadAlertDuration = defaults.double(forKey: Keys.downloadAlertDuration)
         downloadAlertDuration = DownloadAlertDurationOption(rawValue: storedDownloadAlertDuration) ?? .twentySeconds
+
+        appTrafficHistoryEnabled = defaults.bool(forKey: Keys.appTrafficHistoryEnabled)
     }
 
     var lastMenuBarTitle: String {
@@ -128,6 +135,7 @@ private enum Keys {
     static let downloadAlertThreshold = "downloadAlertThreshold"
     static let downloadAlertCooldown = "downloadAlertCooldown"
     static let downloadAlertDuration = "downloadAlertDuration"
+    static let appTrafficHistoryEnabled = "appTrafficHistoryEnabled"
     static let lastMenuBarTitle = "lastMenuBarTitle"
     static let lastConnectionLabel = "lastConnectionLabel"
     static let lastInterfaceSummary = "lastInterfaceSummary"

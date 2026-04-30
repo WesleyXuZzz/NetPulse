@@ -3,6 +3,27 @@ import Foundation
 import Testing
 @testable import NetPulse
 
+private func makeTestCalendar() -> Calendar {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+    return calendar
+}
+
+private func makeTestDate(
+    year: Int,
+    month: Int,
+    day: Int,
+    hour: Int,
+    calendar: Calendar
+) -> Date {
+    DateComponents(calendar: calendar, year: year, month: month, day: day, hour: hour).date!
+}
+
+private func makeTemporaryHistoryURL() -> URL {
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent("NetPulseTests-\(UUID().uuidString)-history.json")
+}
+
 @Test
 func speedFormatterProducesCompactUnits() async throws {
     #expect(SpeedFormatter.short(1536) == "1.5K")
@@ -20,6 +41,15 @@ func speedFormatterCompactsMenuBarOutput() async throws {
     #expect(SpeedFormatter.menuBar(999.5 * 1024 * 1024) == "1G/s")
     #expect(SpeedFormatter.menuBar(Double.greatestFiniteMagnitude) == "999P/s")
     #expect(SpeedFormatter.menuBar(Double.greatestFiniteMagnitude).count <= 6)
+}
+
+@Test
+func speedFormatterFormatsTotalBytesWithoutRateSuffix() async throws {
+    #expect(SpeedFormatter.totalBytes(0) == "0 B")
+    #expect(SpeedFormatter.totalBytes(512) == "512 B")
+    #expect(SpeedFormatter.totalBytes(1536) == "1.5 KB")
+    #expect(SpeedFormatter.totalBytes(1_048_576) == "1.0 MB")
+    #expect(!SpeedFormatter.totalBytes(1_048_576).contains("/s"))
 }
 
 @Test
@@ -155,6 +185,95 @@ func downloadAlertPreferencesDefaultToOneMegabyteOneMinuteAndTwentySeconds() asy
     #expect(preferences.downloadAlertDuration == DownloadAlertDurationOption.twentySeconds)
 
     defaults.removePersistentDomain(forName: suiteName)
+}
+
+@MainActor
+@Test
+func appTrafficHistoryPreferenceDefaultsToDisabled() async throws {
+    let suiteName = "NetPulseTests-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+
+    let preferences = AppPreferences(defaults: defaults)
+    #expect(preferences.appTrafficHistoryEnabled == false)
+
+    defaults.removePersistentDomain(forName: suiteName)
+}
+
+@MainActor
+@Test
+func appTrafficHistoryStoreAccumulatesSamplesByDayAndApp() async throws {
+    let calendar = makeTestCalendar()
+    let store = AppTrafficHistoryStore(
+        fileURL: makeTemporaryHistoryURL(),
+        calendar: calendar,
+        writeDelay: 60
+    )
+    let date = makeTestDate(year: 2026, month: 4, day: 30, hour: 12, calendar: calendar)
+
+    store.record(
+        entries: [
+            ProcessTrafficEntry(
+                name: "Safari Networking",
+                pid: 100,
+                downloadBytesPerSecond: 100,
+                uploadBytesPerSecond: 20,
+                identity: "bundle:com.apple.Safari"
+            ),
+        ],
+        at: date,
+        sampleInterval: 2
+    )
+    store.record(
+        entries: [
+            ProcessTrafficEntry(
+                name: "Safari",
+                pid: 101,
+                downloadBytesPerSecond: 50,
+                uploadBytesPerSecond: 10,
+                identity: "bundle:com.apple.Safari"
+            ),
+        ],
+        at: date.addingTimeInterval(1),
+        sampleInterval: 1
+    )
+
+    #expect(store.days.count == 1)
+    #expect(store.days.first?.id == "2026-04-30")
+    #expect(store.days.first?.entries.count == 1)
+    #expect(store.days.first?.entries.first?.displayName == "Safari")
+    #expect(store.days.first?.entries.first?.downloadBytes == 250)
+    #expect(store.days.first?.entries.first?.uploadBytes == 50)
+    #expect(store.selectedDayID == "2026-04-30")
+}
+
+@MainActor
+@Test
+func appTrafficHistoryStoreSeparatesDaysAndPrunesAfterRetention() async throws {
+    let calendar = makeTestCalendar()
+    let store = AppTrafficHistoryStore(
+        fileURL: makeTemporaryHistoryURL(),
+        calendar: calendar,
+        retentionDays: 30,
+        writeDelay: 60
+    )
+    let recentDate = makeTestDate(year: 2026, month: 4, day: 30, hour: 12, calendar: calendar)
+    let previousDate = makeTestDate(year: 2026, month: 4, day: 29, hour: 12, calendar: calendar)
+    let expiredDate = makeTestDate(year: 2026, month: 3, day: 1, hour: 12, calendar: calendar)
+    let entry = ProcessTrafficEntry(
+        name: "Safari",
+        pid: nil,
+        downloadBytesPerSecond: 1,
+        uploadBytesPerSecond: 1,
+        identity: "bundle:com.apple.Safari"
+    )
+
+    store.record(entries: [entry], at: previousDate, sampleInterval: 1)
+    store.record(entries: [entry], at: recentDate, sampleInterval: 1)
+    store.record(entries: [entry], at: expiredDate, sampleInterval: 1)
+    store.pruneHistory(now: recentDate)
+
+    #expect(store.days.map(\.id) == ["2026-04-30", "2026-04-29"])
 }
 
 @Test
@@ -303,6 +422,48 @@ func processTrafficTopEntriesFallsBackToOriginalProcessWhenApplicationIsUnknown(
     #expect(topEntries.map(\.name) == ["python", "python"])
     #expect(topEntries.map(\.pid) == [11, 10])
     #expect(topEntries.map(\.pidLabel) == ["PID 11", "PID 10"])
+}
+
+@Test
+func processTrafficAggregatedEntriesKeepsFullAppHistoryInput() async throws {
+    let entries = [
+        ProcessTrafficEntry(name: "A", pid: 1, downloadBytesPerSecond: 500, uploadBytesPerSecond: 0),
+        ProcessTrafficEntry(name: "B", pid: 2, downloadBytesPerSecond: 400, uploadBytesPerSecond: 0),
+        ProcessTrafficEntry(name: "C", pid: 3, downloadBytesPerSecond: 300, uploadBytesPerSecond: 0),
+        ProcessTrafficEntry(name: "D", pid: 4, downloadBytesPerSecond: 200, uploadBytesPerSecond: 0),
+    ]
+
+    let aggregatedEntries = ProcessTrafficMonitor.aggregatedEntries(from: entries)
+    let topEntries = ProcessTrafficMonitor.topEntries(from: entries)
+
+    #expect(aggregatedEntries.map(\.name) == ["A", "B", "C", "D"])
+    #expect(topEntries.map(\.name) == ["A", "B", "C"])
+}
+
+@MainActor
+@Test
+func processTrafficMonitorSkipsBaselineBeforeHistoryCallback() async throws {
+    let monitor = ProcessTrafficMonitor()
+    let now = Date()
+    var recordedSamples: [[ProcessTrafficEntry]] = []
+    let entries = [
+        ProcessTrafficEntry(name: "A", pid: 1, downloadBytesPerSecond: 500, uploadBytesPerSecond: 0),
+        ProcessTrafficEntry(name: "B", pid: 2, downloadBytesPerSecond: 400, uploadBytesPerSecond: 0),
+        ProcessTrafficEntry(name: "C", pid: 3, downloadBytesPerSecond: 300, uploadBytesPerSecond: 0),
+        ProcessTrafficEntry(name: "D", pid: 4, downloadBytesPerSecond: 200, uploadBytesPerSecond: 0),
+    ]
+
+    monitor.appTrafficSampleHandler = { entries, _, sampleInterval in
+        #expect(sampleInterval == 1.0)
+        recordedSamples.append(entries)
+    }
+
+    monitor.recordProcessSampleForTesting(entries, at: now)
+    monitor.recordProcessSampleForTesting(entries, at: now.addingTimeInterval(1))
+
+    #expect(recordedSamples.count == 1)
+    #expect(recordedSamples.first?.map(\.name) == ["A", "B", "C", "D"])
+    #expect(monitor.topEntries.map(\.name) == ["A", "B", "C"])
 }
 
 @Test

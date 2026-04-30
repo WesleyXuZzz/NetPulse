@@ -58,7 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let trafficMonitor = NetworkTrafficMonitor()
     private let processTrafficMonitor = ProcessTrafficMonitor()
     private let downloadAlertMonitor = DownloadAlertMonitor()
+    private let appTrafficHistoryStore = AppTrafficHistoryStore()
     private var settingsPanel: FloatingPanel?
+    private var historyWindow: NSWindow?
     private var statusItem: NSStatusItem?
     private weak var statusItemIconView: NSImageView?
     private weak var statusItemTrafficStackView: NSStackView?
@@ -85,14 +87,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         configureSettingsPanel()
         configureStatusItem()
+        configureAppTrafficHistoryRecorder()
         bindMenuBarContent()
         bindPreferences()
         bindLifecycleEvents()
         trafficMonitor.start()
-        processTrafficMonitor.startWarmSampling()
+        updateProcessTrafficSampling()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        appTrafficHistoryStore.flush()
         trafficMonitor.stop()
         processTrafficMonitor.stop()
     }
@@ -105,6 +109,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 downloadAlertMonitor: downloadAlertMonitor,
                 preferences: preferences,
                 launchAtLoginController: launchAtLoginController,
+                onShowHistory: { [weak self] in
+                    self?.showTrafficHistoryWindow()
+                },
                 onQuit: { NSApplication.shared.terminate(nil) }
             )
         )
@@ -125,6 +132,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.isReleasedWhenClosed = false
         panel.contentViewController = hostingController
         settingsPanel = panel
+    }
+
+    private func configureAppTrafficHistoryRecorder() {
+        processTrafficMonitor.appTrafficSampleHandler = { [weak self] entries, date, sampleInterval in
+            guard let self, self.preferences.appTrafficHistoryEnabled else { return }
+            self.appTrafficHistoryStore.record(
+                entries: entries,
+                at: date,
+                sampleInterval: sampleInterval
+            )
+        }
     }
 
     private func configureStatusItem() {
@@ -200,6 +218,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
 
+        preferences.$appTrafficHistoryEnabled
+            .receive(on: RunLoop.main)
+            .sink { [weak self] isEnabled in
+                guard let self else { return }
+                if !isEnabled {
+                    self.appTrafficHistoryStore.flush()
+                }
+                self.updateProcessTrafficSampling()
+            }
+            .store(in: &cancellables)
+
         Publishers.CombineLatest4(
             preferences.$downloadAlertEnabled,
             preferences.$downloadAlertThreshold,
@@ -237,6 +266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in
                 self?.trafficMonitor.handleSystemWillSleep()
                 self?.processTrafficMonitor.pauseForSleep()
+                self?.appTrafficHistoryStore.flush()
             }
             .store(in: &cancellables)
 
@@ -244,7 +274,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.trafficMonitor.handleSystemDidWake()
-                self?.processTrafficMonitor.resumeAfterWake()
+                self?.updateProcessTrafficSampling()
                 self?.launchAtLoginController.refreshStatus()
             }
             .store(in: &cancellables)
@@ -406,6 +436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         trafficMonitor.refreshNow()
         launchAtLoginController.refreshStatus()
+        processTrafficMonitor.startWarmSampling()
         processTrafficMonitor.refreshFreshnessState()
         positionSettingsPanel(relativeTo: button, panel: settingsPanel)
         settingsPanel.orderFrontRegardless()
@@ -519,6 +550,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func closeSettingsPanel() {
         settingsPanel?.orderOut(nil)
         removeOutsideClickMonitors()
+        updateProcessTrafficSampling()
+    }
+
+    private func updateProcessTrafficSampling() {
+        if preferences.appTrafficHistoryEnabled || settingsPanel?.isVisible == true {
+            processTrafficMonitor.startWarmSampling()
+        } else if processTrafficMonitor.samplingState != .idle {
+            processTrafficMonitor.stop(clearEntries: false)
+        }
+    }
+
+    private func showTrafficHistoryWindow() {
+        let window = historyWindow ?? makeTrafficHistoryWindow()
+        historyWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    private func makeTrafficHistoryWindow() -> NSWindow {
+        let hostingController = NSHostingController(
+            rootView: AppTrafficHistoryWindowView(store: appTrafficHistoryStore)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "流量历史"
+        window.minSize = NSSize(width: 700, height: 480)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = hostingController
+        window.center()
+        return window
     }
 
 }

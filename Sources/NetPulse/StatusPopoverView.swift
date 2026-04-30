@@ -7,6 +7,7 @@ struct StatusPopoverView: View {
     @ObservedObject var downloadAlertMonitor: DownloadAlertMonitor
     @ObservedObject var preferences: AppPreferences
     @ObservedObject var launchAtLoginController: LaunchAtLoginController
+    let onShowHistory: () -> Void
     let onQuit: () -> Void
     @State private var showsFullInterfaceSummary = false
 
@@ -277,6 +278,24 @@ struct StatusPopoverView: View {
                             launchAtLoginController.openLoginItemsSettings()
                         }
                         .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("流量历史")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.secondary)
+
+                        Toggle("记录每日 App 流量历史", isOn: $preferences.appTrafficHistoryEnabled)
+
+                        Button {
+                            onShowHistory()
+                        } label: {
+                            Label("流量历史", systemImage: "clock.arrow.circlepath")
+                        }
+                        .buttonStyle(.bordered)
                         .controlSize(.small)
                     }
 
