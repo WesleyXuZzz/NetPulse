@@ -11,322 +11,325 @@ struct StatusPopoverView: View {
     @State private var showsFullInterfaceSummary = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("NetPulse")
-                        .font(.system(size: 20, weight: .semibold, design: .rounded))
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(headerSummary)
-                            .font(.system(size: 12, weight: .medium, design: .rounded))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .help(fullHeaderSummary)
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("NetPulse")
+                            .font(.system(size: 20, weight: .semibold, design: .rounded))
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(headerSummary)
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .help(fullHeaderSummary)
 
-                        if canExpandInterfaceSummary {
-                            Button(showsFullInterfaceSummary ? "收起" : "查看全部") {
-                                showsFullInterfaceSummary.toggle()
+                            if canExpandInterfaceSummary {
+                                Button(showsFullInterfaceSummary ? "收起" : "查看全部") {
+                                    showsFullInterfaceSummary.toggle()
+                                }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .foregroundStyle(Color.accentColor)
                             }
-                            .buttonStyle(.plain)
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.accentColor)
+                        }
+                    }
+
+                    Spacer()
+
+                    Button("退出", action: onQuit)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+
+                if showsFullInterfaceSummary {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("当前网卡详情")
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(expandedInterfaceFootnote)
+                                .font(.system(size: 11, weight: .medium, design: .rounded))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Group {
+                            if expandedInterfaceLines.count <= 3 {
+                                interfaceDetailList
+                            } else {
+                                ScrollView {
+                                    interfaceDetailList
+                                }
+                                .frame(height: 82)
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.primary.opacity(0.045))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.06))
+                    )
+                }
+
+                HStack(spacing: 12) {
+                    MetricCard(
+                        title: "下载",
+                        value: SpeedFormatter.detailed(monitor.downloadBytesPerSecond),
+                        tint: Color(red: 0.18, green: 0.49, blue: 0.95)
+                    )
+
+                    MetricCard(
+                        title: "上传",
+                        value: SpeedFormatter.detailed(monitor.uploadBytesPerSecond),
+                        tint: Color(red: 0.15, green: 0.67, blue: 0.43)
+                    )
+                }
+
+                if let peakSummary {
+                    HStack {
+                        Text("峰值")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(peakSummary)
+                            .fontWeight(.medium)
+                    }
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                }
+
+                Chart(chartHistory) { point in
+                    LineMark(
+                        x: .value("时间", point.timestamp),
+                        y: .value("下载", point.downloadBytesPerSecond)
+                    )
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(Color(red: 0.18, green: 0.49, blue: 0.95).opacity(0.88))
+                    .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
+
+                    LineMark(
+                        x: .value("时间", point.timestamp),
+                        y: .value("上传", point.uploadBytesPerSecond)
+                    )
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(Color(red: 0.15, green: 0.67, blue: 0.43).opacity(0.75))
+                    .lineStyle(StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+
+                    if let peakDownloadPoint, peakDownloadPoint.id == point.id, peakDownloadPoint.downloadBytesPerSecond > 0 {
+                        PointMark(
+                            x: .value("时间", point.timestamp),
+                            y: .value("下载峰值", point.downloadBytesPerSecond)
+                        )
+                        .foregroundStyle(Color(red: 0.18, green: 0.49, blue: 0.95).opacity(0.65))
+                        .symbolSize(22)
+                    }
+
+                    if let peakUploadPoint, peakUploadPoint.id == point.id, peakUploadPoint.uploadBytesPerSecond > 0 {
+                        PointMark(
+                            x: .value("时间", point.timestamp),
+                            y: .value("上传峰值", point.uploadBytesPerSecond)
+                        )
+                        .foregroundStyle(Color(red: 0.15, green: 0.67, blue: 0.43).opacity(0.55))
+                        .symbolSize(18)
+                    }
+                }
+                .chartYScale(domain: 0...chartUpperBound)
+                .chartXAxis(.hidden)
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let speed = value.as(Double.self) {
+                                Text(SpeedFormatter.short(speed))
+                            }
                         }
                     }
                 }
+                .frame(height: 150)
 
-                Spacer()
-
-                Button("退出", action: onQuit)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-            }
-
-            if showsFullInterfaceSummary {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Text("当前网卡详情")
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        Text("高流量进程")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Text(expandedInterfaceFootnote)
+                        Text(processPanelFootnote)
                             .font(.system(size: 11, weight: .medium, design: .rounded))
                             .foregroundStyle(.secondary)
                     }
 
-                    Group {
-                        if expandedInterfaceLines.count <= 3 {
-                            interfaceDetailList
-                        } else {
-                            ScrollView {
-                                interfaceDetailList
+                    if processMonitor.topEntries.isEmpty {
+                        Text(processMonitor.statusText)
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array(processMonitor.topEntries.enumerated()), id: \.element.id) { index, entry in
+                                HStack(alignment: .top, spacing: 10) {
+                                    Text("\(index + 1)")
+                                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 16, alignment: .leading)
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(entry.displayName)
+                                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+
+                                        if let pidLabel = entry.pidLabel {
+                                            Text(pidLabel)
+                                                .font(.system(size: 11, weight: .medium, design: .rounded))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+
+                                    Spacer(minLength: 12)
+
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        Text("↓ \(SpeedFormatter.shortPerSecond(entry.downloadBytesPerSecond))")
+                                            .foregroundStyle(Color(red: 0.18, green: 0.49, blue: 0.95))
+                                        Text("↑ \(SpeedFormatter.shortPerSecond(entry.uploadBytesPerSecond))")
+                                            .foregroundStyle(Color(red: 0.15, green: 0.67, blue: 0.43))
+                                    }
+                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                }
                             }
-                            .frame(height: 82)
                         }
                     }
                 }
                 .padding(12)
                 .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .fill(Color.primary.opacity(0.045))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.06))
                 )
-            }
 
-            HStack(spacing: 12) {
-                MetricCard(
-                    title: "下载",
-                    value: SpeedFormatter.detailed(monitor.downloadBytesPerSecond),
-                    tint: Color(red: 0.18, green: 0.49, blue: 0.95)
-                )
-
-                MetricCard(
-                    title: "上传",
-                    value: SpeedFormatter.detailed(monitor.uploadBytesPerSecond),
-                    tint: Color(red: 0.15, green: 0.67, blue: 0.43)
-                )
-            }
-
-            if let peakSummary {
                 HStack {
-                    Text("峰值")
+                    Text("间隔")
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text(peakSummary)
+                    Text(preferences.refreshIntervalOption.title)
                         .fontWeight(.medium)
                 }
                 .font(.system(size: 12, weight: .medium, design: .rounded))
-            }
-
-            Chart(chartHistory) { point in
-                LineMark(
-                    x: .value("时间", point.timestamp),
-                    y: .value("下载", point.downloadBytesPerSecond)
-                )
-                .interpolationMethod(.monotone)
-                .foregroundStyle(Color(red: 0.18, green: 0.49, blue: 0.95).opacity(0.88))
-                .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
-
-                LineMark(
-                    x: .value("时间", point.timestamp),
-                    y: .value("上传", point.uploadBytesPerSecond)
-                )
-                .interpolationMethod(.monotone)
-                .foregroundStyle(Color(red: 0.15, green: 0.67, blue: 0.43).opacity(0.75))
-                .lineStyle(StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
-
-                if let peakDownloadPoint, peakDownloadPoint.id == point.id, peakDownloadPoint.downloadBytesPerSecond > 0 {
-                    PointMark(
-                        x: .value("时间", point.timestamp),
-                        y: .value("下载峰值", point.downloadBytesPerSecond)
-                    )
-                    .foregroundStyle(Color(red: 0.18, green: 0.49, blue: 0.95).opacity(0.65))
-                    .symbolSize(22)
-                }
-
-                if let peakUploadPoint, peakUploadPoint.id == point.id, peakUploadPoint.uploadBytesPerSecond > 0 {
-                    PointMark(
-                        x: .value("时间", point.timestamp),
-                        y: .value("上传峰值", point.uploadBytesPerSecond)
-                    )
-                    .foregroundStyle(Color(red: 0.15, green: 0.67, blue: 0.43).opacity(0.55))
-                    .symbolSize(18)
-                }
-            }
-            .chartYScale(domain: 0...chartUpperBound)
-            .chartXAxis(.hidden)
-            .chartYAxis {
-                AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
-                    AxisGridLine()
-                    AxisValueLabel {
-                        if let speed = value.as(Double.self) {
-                            Text(SpeedFormatter.short(speed))
-                        }
-                    }
-                }
-            }
-            .frame(height: 150)
-
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("高流量进程")
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(processPanelFootnote)
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundStyle(.secondary)
-                }
-
-                if processMonitor.topEntries.isEmpty {
-                    Text(processMonitor.statusText)
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(processMonitor.topEntries.enumerated()), id: \.element.id) { index, entry in
-                            HStack(alignment: .top, spacing: 10) {
-                                Text("\(index + 1)")
-                                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 16, alignment: .leading)
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(entry.displayName)
-                                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(1)
-
-                                    if let pidLabel = entry.pidLabel {
-                                        Text(pidLabel)
-                                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-
-                                Spacer(minLength: 12)
-
-                                VStack(alignment: .trailing, spacing: 2) {
-                                    Text("↓ \(SpeedFormatter.shortPerSecond(entry.downloadBytesPerSecond))")
-                                        .foregroundStyle(Color(red: 0.18, green: 0.49, blue: 0.95))
-                                    Text("↑ \(SpeedFormatter.shortPerSecond(entry.uploadBytesPerSecond))")
-                                        .foregroundStyle(Color(red: 0.15, green: 0.67, blue: 0.43))
-                                }
-                                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.primary.opacity(0.045))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.06))
-            )
-
-            HStack {
-                Text("间隔")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(preferences.refreshIntervalOption.title)
-                    .fontWeight(.medium)
-            }
-            .font(.system(size: 12, weight: .medium, design: .rounded))
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 12) {
-                Text("选项")
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
-
-                Picker("显示", selection: $preferences.menuBarDisplayMode) {
-                    ForEach(MenuBarDisplayMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Picker("间隔", selection: $preferences.refreshIntervalOption) {
-                    ForEach(RefreshIntervalOption.allCases) { option in
-                        Text(option.title).tag(option)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Picker(
-                    "网卡",
-                    selection: Binding(
-                        get: { preferences.selectedInterfaceName ?? automaticInterfaceID },
-                        set: { preferences.selectedInterfaceName = $0 == automaticInterfaceID ? nil : $0 }
-                    )
-                ) {
-                    Text("自动选择").tag(automaticInterfaceID)
-                    ForEach(monitor.availableInterfaces) { interface in
-                        Text(interface.displayName).tag(interface.id)
-                    }
-                }
-
-                Toggle(
-                    "登录自启",
-                    isOn: Binding(
-                        get: { launchAtLoginController.isEnabled },
-                        set: { launchAtLoginController.setEnabled($0) }
-                    )
-                )
-                .disabled(!launchAtLoginController.isAvailable)
-
-                if let detailText = launchAtLoginController.detailText {
-                    Text(detailText)
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if launchAtLoginController.needsApproval {
-                    Button("打开登录项设置") {
-                        launchAtLoginController.openLoginItemsSettings()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                }
 
                 Divider()
 
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("下载提醒")
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("选项")
                         .font(.system(size: 12, weight: .semibold, design: .rounded))
                         .foregroundStyle(.secondary)
 
-                    Toggle("高速下载提醒", isOn: $preferences.downloadAlertEnabled)
+                    Picker("显示", selection: $preferences.menuBarDisplayMode) {
+                        ForEach(MenuBarDisplayMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
 
-                    Picker("提醒阈值", selection: $preferences.downloadAlertThreshold) {
-                        ForEach(DownloadAlertThresholdOption.allCases) { option in
+                    Picker("间隔", selection: $preferences.refreshIntervalOption) {
+                        ForEach(RefreshIntervalOption.allCases) { option in
                             Text(option.title).tag(option)
                         }
                     }
-                    .disabled(!preferences.downloadAlertEnabled)
+                    .pickerStyle(.segmented)
 
-                    Picker("冷却时间", selection: $preferences.downloadAlertCooldown) {
-                        ForEach(DownloadAlertCooldownOption.allCases) { option in
-                            Text(option.title).tag(option)
+                    Picker(
+                        "网卡",
+                        selection: Binding(
+                            get: { preferences.selectedInterfaceName ?? automaticInterfaceID },
+                            set: { preferences.selectedInterfaceName = $0 == automaticInterfaceID ? nil : $0 }
+                        )
+                    ) {
+                        Text("自动选择").tag(automaticInterfaceID)
+                        ForEach(monitor.availableInterfaces) { interface in
+                            Text(interface.displayName).tag(interface.id)
                         }
                     }
-                    .disabled(!preferences.downloadAlertEnabled)
 
-                    Picker("持续时长", selection: $preferences.downloadAlertDuration) {
-                        ForEach(DownloadAlertDurationOption.allCases) { option in
-                            Text(option.title).tag(option)
-                        }
+                    Toggle(
+                        "登录自启",
+                        isOn: Binding(
+                            get: { launchAtLoginController.isEnabled },
+                            set: { launchAtLoginController.setEnabled($0) }
+                        )
+                    )
+                    .disabled(!launchAtLoginController.isAvailable)
+
+                    if let detailText = launchAtLoginController.detailText {
+                        Text(detailText)
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .disabled(!preferences.downloadAlertEnabled)
 
-                    Text(downloadAlertMonitor.detailText)
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    if preferences.downloadAlertEnabled, downloadAlertMonitor.authorizationState == .denied {
-                        Button("打开通知设置") {
-                            downloadAlertMonitor.openNotificationSettings()
+                    if launchAtLoginController.needsApproval {
+                        Button("打开登录项设置") {
+                            launchAtLoginController.openLoginItemsSettings()
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.borderedProminent)
                         .controlSize(.small)
+                    }
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("下载提醒")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.secondary)
+
+                        Toggle("高速下载提醒", isOn: $preferences.downloadAlertEnabled)
+
+                        Picker("提醒阈值", selection: $preferences.downloadAlertThreshold) {
+                            ForEach(DownloadAlertThresholdOption.allCases) { option in
+                                Text(option.title).tag(option)
+                            }
+                        }
+                        .disabled(!preferences.downloadAlertEnabled)
+
+                        Picker("冷却时间", selection: $preferences.downloadAlertCooldown) {
+                            ForEach(DownloadAlertCooldownOption.allCases) { option in
+                                Text(option.title).tag(option)
+                            }
+                        }
+                        .disabled(!preferences.downloadAlertEnabled)
+
+                        Picker("持续时长", selection: $preferences.downloadAlertDuration) {
+                            ForEach(DownloadAlertDurationOption.allCases) { option in
+                                Text(option.title).tag(option)
+                            }
+                        }
+                        .disabled(!preferences.downloadAlertEnabled)
+
+                        Text(downloadAlertMonitor.detailText)
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if preferences.downloadAlertEnabled, downloadAlertMonitor.authorizationState == .denied {
+                            Button("打开通知设置") {
+                                downloadAlertMonitor.openNotificationSettings()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
                     }
                 }
             }
+            .padding(.horizontal, 18)
+            .padding(.top, 10)
+            .padding(.bottom, 18)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 10)
-        .padding(.bottom, 18)
         .frame(width: 380)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
