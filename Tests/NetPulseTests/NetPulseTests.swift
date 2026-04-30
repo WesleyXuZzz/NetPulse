@@ -230,6 +230,127 @@ func processTrafficParserGroupsCompactRowsBySampleTimeWhenHeaderIsNotRepeated() 
 }
 
 @Test
+func processTrafficTopEntriesAggregatesProcessesByApplicationIdentity() async throws {
+    let entries = [
+        ProcessTrafficEntry(
+            name: "Code Helper",
+            pid: 10,
+            downloadBytesPerSecond: 100,
+            uploadBytesPerSecond: 50
+        ),
+        ProcessTrafficEntry(
+            name: "Code Helper",
+            pid: 11,
+            downloadBytesPerSecond: 300,
+            uploadBytesPerSecond: 20
+        ),
+        ProcessTrafficEntry(
+            name: "Safari",
+            pid: 20,
+            downloadBytesPerSecond: 200,
+            uploadBytesPerSecond: 10
+        ),
+    ]
+
+    let topEntries = ProcessTrafficMonitor.topEntries(from: entries) { entry in
+        switch entry.pid {
+        case 10, 11:
+            ProcessTrafficApplicationIdentity(
+                key: "bundle:com.microsoft.VSCode",
+                displayName: "Visual Studio Code"
+            )
+        case 20:
+            ProcessTrafficApplicationIdentity(
+                key: "bundle:com.apple.Safari",
+                displayName: "Safari"
+            )
+        default:
+            nil
+        }
+    }
+
+    #expect(topEntries.count == 2)
+    #expect(topEntries[0].name == "Visual Studio Code")
+    #expect(topEntries[0].pid == nil)
+    #expect(topEntries[0].downloadBytesPerSecond == 400)
+    #expect(topEntries[0].uploadBytesPerSecond == 70)
+    #expect(topEntries[0].pidLabel == "2 个进程 · Code Helper 等")
+    #expect(topEntries[1].name == "Safari")
+    #expect(topEntries[1].downloadBytesPerSecond == 200)
+    #expect(topEntries[1].uploadBytesPerSecond == 10)
+}
+
+@Test
+func processTrafficTopEntriesFallsBackToOriginalProcessWhenApplicationIsUnknown() async throws {
+    let entries = [
+        ProcessTrafficEntry(
+            name: "python",
+            pid: 10,
+            downloadBytesPerSecond: 100,
+            uploadBytesPerSecond: 50
+        ),
+        ProcessTrafficEntry(
+            name: "python",
+            pid: 11,
+            downloadBytesPerSecond: 300,
+            uploadBytesPerSecond: 20
+        ),
+    ]
+
+    let topEntries = ProcessTrafficMonitor.topEntries(from: entries)
+
+    #expect(topEntries.count == 2)
+    #expect(topEntries.map(\.name) == ["python", "python"])
+    #expect(topEntries.map(\.pid) == [11, 10])
+    #expect(topEntries.map(\.pidLabel) == ["PID 11", "PID 10"])
+}
+
+@Test
+func processTrafficTopEntriesKeepsFilteringNetPulseAndNettopAfterApplicationLookup() async throws {
+    let entries = [
+        ProcessTrafficEntry(
+            name: "nettop",
+            pid: 10,
+            downloadBytesPerSecond: 1_000_000,
+            uploadBytesPerSecond: 1_000_000
+        ),
+        ProcessTrafficEntry(
+            name: "NetPulse",
+            pid: 11,
+            downloadBytesPerSecond: 1_000_000,
+            uploadBytesPerSecond: 1_000_000
+        ),
+        ProcessTrafficEntry(
+            name: "NetPulse Helper",
+            pid: 12,
+            downloadBytesPerSecond: 1_000_000,
+            uploadBytesPerSecond: 1_000_000
+        ),
+        ProcessTrafficEntry(
+            name: "Safari Networking",
+            pid: 20,
+            downloadBytesPerSecond: 200,
+            uploadBytesPerSecond: 10
+        ),
+    ]
+
+    let topEntries = ProcessTrafficMonitor.topEntries(from: entries) { entry in
+        switch entry.pid {
+        case 12:
+            ProcessTrafficApplicationIdentity(key: "bundle:com.netpulse.app", displayName: "NetPulse")
+        case 20:
+            ProcessTrafficApplicationIdentity(key: "bundle:com.apple.Safari", displayName: "Safari")
+        default:
+            nil
+        }
+    }
+
+    #expect(topEntries.count == 1)
+    #expect(topEntries.first?.name == "Safari")
+    #expect(topEntries.first?.pidLabel == "Safari Networking · PID 20")
+}
+
+@Test
 @MainActor
 func processTrafficMonitorKeepsFreshSamplesVisible() async throws {
     let monitor = ProcessTrafficMonitor()

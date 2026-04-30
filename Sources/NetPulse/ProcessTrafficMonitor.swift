@@ -1,3 +1,5 @@
+import AppKit
+import Darwin
 import Foundation
 
 struct ProcessTrafficEntry: Identifiable, Equatable {
@@ -5,8 +7,30 @@ struct ProcessTrafficEntry: Identifiable, Equatable {
     let pid: Int?
     let downloadBytesPerSecond: Double
     let uploadBytesPerSecond: Double
+    let detailText: String?
+    let identity: String?
+
+    init(
+        name: String,
+        pid: Int?,
+        downloadBytesPerSecond: Double,
+        uploadBytesPerSecond: Double,
+        detailText: String? = nil,
+        identity: String? = nil
+    ) {
+        self.name = name
+        self.pid = pid
+        self.downloadBytesPerSecond = downloadBytesPerSecond
+        self.uploadBytesPerSecond = uploadBytesPerSecond
+        self.detailText = detailText
+        self.identity = identity
+    }
 
     var id: String {
+        if let identity {
+            return identity
+        }
+
         if let pid {
             return "\(name)-\(pid)"
         }
@@ -23,7 +47,93 @@ struct ProcessTrafficEntry: Identifiable, Equatable {
     }
 
     var pidLabel: String? {
-        pid.map { "PID \($0)" }
+        if let detailText, !detailText.isEmpty {
+            return detailText
+        }
+
+        return pid.map { "PID \($0)" }
+    }
+}
+
+struct ProcessTrafficApplicationIdentity: Equatable {
+    let key: String
+    let displayName: String
+}
+
+private struct ProcessTrafficAggregate {
+    let key: String
+    let displayName: String
+    let firstSourceName: String
+    let firstPID: Int?
+    var downloadBytesPerSecond: Double
+    var uploadBytesPerSecond: Double
+    private var sourceNames: [String]
+    private var processIDs: Set<Int>
+    private var entryCount: Int
+
+    init(
+        key: String,
+        displayName: String,
+        firstSourceName: String,
+        firstPID: Int?,
+        downloadBytesPerSecond: Double,
+        uploadBytesPerSecond: Double
+    ) {
+        self.key = key
+        self.displayName = displayName
+        self.firstSourceName = firstSourceName
+        self.firstPID = firstPID
+        self.downloadBytesPerSecond = downloadBytesPerSecond
+        self.uploadBytesPerSecond = uploadBytesPerSecond
+        sourceNames = [firstSourceName]
+        processIDs = Set(firstPID.map { [$0] } ?? [])
+        entryCount = 1
+    }
+
+    mutating func add(_ entry: ProcessTrafficEntry) {
+        downloadBytesPerSecond += entry.downloadBytesPerSecond
+        uploadBytesPerSecond += entry.uploadBytesPerSecond
+        entryCount += 1
+
+        let sourceName = entry.displayName
+        if !sourceNames.contains(sourceName) {
+            sourceNames.append(sourceName)
+        }
+
+        if let pid = entry.pid {
+            processIDs.insert(pid)
+        }
+    }
+
+    var entry: ProcessTrafficEntry {
+        let processCount = processIDs.isEmpty ? entryCount : processIDs.count
+        let detailText = detailText(processCount: processCount)
+        let representativePID = processCount == 1 ? (processIDs.first ?? firstPID) : nil
+
+        return ProcessTrafficEntry(
+            name: displayName,
+            pid: representativePID,
+            downloadBytesPerSecond: downloadBytesPerSecond,
+            uploadBytesPerSecond: uploadBytesPerSecond,
+            detailText: detailText,
+            identity: key
+        )
+    }
+
+    private func detailText(processCount: Int) -> String? {
+        guard processCount > 1 else {
+            guard firstSourceName != displayName else { return nil }
+            if let firstPID {
+                return "\(firstSourceName) · PID \(firstPID)"
+            }
+            return firstSourceName
+        }
+
+        guard firstSourceName != displayName else {
+            return "\(processCount) 个进程"
+        }
+
+        return "\(processCount) 个进程 · \(firstSourceName) 等"
     }
 }
 
@@ -60,6 +170,8 @@ final class ProcessTrafficMonitor: ObservableObject {
     private var wantsWarmSampling = false
     private var consecutiveFailures = 0
     private var currentSampleBucket: String?
+    private var applicationIdentityCache: [Int: ProcessTrafficApplicationIdentity] = [:]
+    private var unresolvedApplicationIdentityPIDs = Set<Int>()
 
     func start() {
         startWarmSampling()
@@ -340,10 +452,41 @@ final class ProcessTrafficMonitor: ObservableObject {
         return String(sampleTime[..<separatorIndex])
     }
 
-    nonisolated static func topEntries(from entries: [ProcessTrafficEntry]) -> [ProcessTrafficEntry] {
-        entries
-            .filter { $0.totalBytesPerSecond > 0 }
-            .filter { $0.name != "nettop" && $0.name != "NetPulse" }
+    nonisolated static func topEntries(
+        from entries: [ProcessTrafficEntry],
+        applicationIdentityFor: (ProcessTrafficEntry) -> ProcessTrafficApplicationIdentity? = { _ in nil }
+    ) -> [ProcessTrafficEntry] {
+        var aggregates: [String: ProcessTrafficAggregate] = [:]
+
+        for entry in entries {
+            guard entry.totalBytesPerSecond > 0 else { continue }
+            guard !shouldIgnoreProcessName(entry.name) else { continue }
+
+            let applicationIdentity = applicationIdentityFor(entry)
+            if let applicationIdentity, shouldIgnoreProcessName(applicationIdentity.displayName) {
+                continue
+            }
+
+            let key = applicationIdentity?.key ?? fallbackAggregationKey(for: entry)
+            let displayName = applicationIdentity?.displayName ?? entry.displayName
+
+            if var aggregate = aggregates[key] {
+                aggregate.add(entry)
+                aggregates[key] = aggregate
+            } else {
+                aggregates[key] = ProcessTrafficAggregate(
+                    key: key,
+                    displayName: displayName,
+                    firstSourceName: entry.displayName,
+                    firstPID: entry.pid,
+                    downloadBytesPerSecond: entry.downloadBytesPerSecond,
+                    uploadBytesPerSecond: entry.uploadBytesPerSecond
+                )
+            }
+        }
+
+        return aggregates.values
+            .map(\.entry)
             .sorted { lhs, rhs in
                 if lhs.totalBytesPerSecond == rhs.totalBytesPerSecond {
                     return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
@@ -448,7 +591,9 @@ final class ProcessTrafficMonitor: ObservableObject {
     }
 
     private func finishCurrentSample() {
-        let filteredEntries = Self.topEntries(from: currentSampleEntries)
+        let filteredEntries = Self.topEntries(from: currentSampleEntries) { [self] entry in
+            applicationIdentity(for: entry)
+        }
         currentSampleEntries.removeAll()
 
         if !didSkipBaselineSample {
@@ -504,6 +649,134 @@ final class ProcessTrafficMonitor: ObservableObject {
         statusText = trimmedReason.isEmpty ? "无法读取进程流量" : "无法读取进程流量：\(trimmedReason)"
         freshnessText = "暂不可用"
         scheduleRestart()
+    }
+
+    private func applicationIdentity(for entry: ProcessTrafficEntry) -> ProcessTrafficApplicationIdentity? {
+        guard let pid = entry.pid else { return nil }
+
+        if let cachedIdentity = applicationIdentityCache[pid] {
+            return cachedIdentity
+        }
+
+        if unresolvedApplicationIdentityPIDs.contains(pid) {
+            return nil
+        }
+
+        if applicationIdentityCache.count + unresolvedApplicationIdentityPIDs.count > 512 {
+            applicationIdentityCache.removeAll()
+            unresolvedApplicationIdentityPIDs.removeAll()
+        }
+
+        guard let identity = Self.resolveApplicationIdentity(pid: pid, processName: entry.name) else {
+            unresolvedApplicationIdentityPIDs.insert(pid)
+            return nil
+        }
+
+        applicationIdentityCache[pid] = identity
+        return identity
+    }
+
+    nonisolated static func resolveApplicationIdentity(pid: Int, processName: String) -> ProcessTrafficApplicationIdentity? {
+        if let executablePath = executablePath(for: pid),
+           let appBundleURL = outermostAppBundleURL(containing: executablePath),
+           let identity = applicationIdentity(fromBundleAt: appBundleURL) {
+            return identity
+        }
+
+        let processIdentifier = pid_t(pid)
+        guard let runningApplication = NSRunningApplication(processIdentifier: processIdentifier) else {
+            return nil
+        }
+
+        let displayName = normalizedDisplayName(
+            runningApplication.localizedName
+                ?? runningApplication.bundleURL.flatMap { applicationDisplayName(fromBundleAt: $0) }
+                ?? processName
+        )
+        guard let displayName else { return nil }
+
+        let key: String
+        if let bundleIdentifier = runningApplication.bundleIdentifier, !bundleIdentifier.isEmpty {
+            key = "bundle:\(bundleIdentifier)"
+        } else if let bundleURL = runningApplication.bundleURL {
+            key = "app:\(bundleURL.standardizedFileURL.path)"
+        } else {
+            key = "process:\(displayName)"
+        }
+
+        return ProcessTrafficApplicationIdentity(key: key, displayName: displayName)
+    }
+
+    nonisolated private static func shouldIgnoreProcessName(_ name: String) -> Bool {
+        name == "nettop" || name == "NetPulse"
+    }
+
+    nonisolated private static func fallbackAggregationKey(for entry: ProcessTrafficEntry) -> String {
+        if let pid = entry.pid {
+            return "process:\(entry.name)-\(pid)"
+        }
+
+        return "process:\(entry.name)"
+    }
+
+    nonisolated private static func executablePath(for pid: Int) -> String? {
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let result = buffer.withUnsafeMutableBufferPointer { bufferPointer -> Int32 in
+            guard let baseAddress = bufferPointer.baseAddress else { return 0 }
+            return proc_pidpath(pid_t(pid), UnsafeMutableRawPointer(baseAddress), UInt32(bufferPointer.count))
+        }
+
+        guard result > 0 else { return nil }
+        let pathBytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: pathBytes, as: UTF8.self)
+    }
+
+    nonisolated private static func outermostAppBundleURL(containing executablePath: String) -> URL? {
+        var currentPath = (executablePath as NSString).deletingLastPathComponent
+        var appPath: String?
+
+        while !currentPath.isEmpty && currentPath != "/" {
+            if (currentPath as NSString).pathExtension == "app" {
+                appPath = currentPath
+            }
+
+            let parentPath = (currentPath as NSString).deletingLastPathComponent
+            if parentPath == currentPath {
+                break
+            }
+            currentPath = parentPath
+        }
+
+        guard let appPath else { return nil }
+        return URL(fileURLWithPath: appPath)
+    }
+
+    nonisolated private static func applicationIdentity(fromBundleAt bundleURL: URL) -> ProcessTrafficApplicationIdentity? {
+        guard let displayName = applicationDisplayName(fromBundleAt: bundleURL) else { return nil }
+        let bundle = Bundle(url: bundleURL)
+        let key: String
+
+        if let bundleIdentifier = bundle?.bundleIdentifier, !bundleIdentifier.isEmpty {
+            key = "bundle:\(bundleIdentifier)"
+        } else {
+            key = "app:\(bundleURL.standardizedFileURL.path)"
+        }
+
+        return ProcessTrafficApplicationIdentity(key: key, displayName: displayName)
+    }
+
+    nonisolated private static func applicationDisplayName(fromBundleAt bundleURL: URL) -> String? {
+        let bundle = Bundle(url: bundleURL)
+        let displayName = bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+        let bundleName = bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
+        let fallbackName = bundleURL.deletingPathExtension().lastPathComponent
+        return normalizedDisplayName(displayName ?? bundleName ?? fallbackName)
+    }
+
+    nonisolated private static func normalizedDisplayName(_ rawValue: String?) -> String? {
+        guard let rawValue else { return nil }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func scheduleRestart() {
