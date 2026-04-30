@@ -58,6 +58,7 @@ final class ProcessTrafficMonitor: ObservableObject {
     private var errorBuffer = ""
     private var wantsWarmSampling = false
     private var consecutiveFailures = 0
+    private var currentSampleBucket: String?
 
     func start() {
         startWarmSampling()
@@ -92,7 +93,15 @@ final class ProcessTrafficMonitor: ObservableObject {
         let errorPipe = Pipe()
 
         process.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
-        process.arguments = ["-P", "-n", "-x", "-d", "-s", String(Int(samplingInterval)), "-L", "0"]
+        process.arguments = [
+            "-P",
+            "-n",
+            "-x",
+            "-d",
+            "-s", String(Int(samplingInterval)),
+            "-L", "0",
+            "-J", "time,bytes_in,bytes_out",
+        ]
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
@@ -245,6 +254,7 @@ final class ProcessTrafficMonitor: ObservableObject {
         currentSampleEntries.removeAll()
         hasOpenSample = false
         didSkipBaselineSample = false
+        currentSampleBucket = nil
         errorBuffer = ""
     }
 
@@ -267,12 +277,20 @@ final class ProcessTrafficMonitor: ObservableObject {
         guard !line.isEmpty, !isCSVHeader(line) else { return nil }
 
         let columns = line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
-        guard columns.count > 5 else { return nil }
+        guard columns.count > 3 else { return nil }
 
         let sampleTime = columns[0]
         let processLabel = columns[1]
-        let bytesIn = Double(columns[4]) ?? 0
-        let bytesOut = Double(columns[5]) ?? 0
+        let bytesIn: Double
+        let bytesOut: Double
+
+        if columns.count > 5 {
+            bytesIn = Double(columns[4]) ?? 0
+            bytesOut = Double(columns[5]) ?? 0
+        } else {
+            bytesIn = Double(columns[2]) ?? 0
+            bytesOut = Double(columns[3]) ?? 0
+        }
 
         let parsedLabel = parseProcessLabel(processLabel)
         let normalizedName = parsedLabel.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -291,6 +309,14 @@ final class ProcessTrafficMonitor: ObservableObject {
 
     nonisolated static func isCSVHeader(_ line: String) -> Bool {
         line.hasPrefix("time,")
+    }
+
+    nonisolated static func sampleBucket(for sampleTime: String) -> String {
+        guard let separatorIndex = sampleTime.firstIndex(of: ".") else {
+            return sampleTime
+        }
+
+        return String(sampleTime[..<separatorIndex])
     }
 
     nonisolated static func topEntries(from entries: [ProcessTrafficEntry]) -> [ProcessTrafficEntry] {
@@ -326,14 +352,23 @@ final class ProcessTrafficMonitor: ObservableObject {
             samples.append(entries)
         }
 
+        var currentSampleBucket: String?
+
         for rawLine in csv.split(whereSeparator: \.isNewline) {
             let line = String(rawLine)
             if isCSVHeader(line) {
                 finishSample()
+                currentSampleBucket = nil
                 continue
             }
 
             guard let row = parseCSVRow(line) else { continue }
+            let sampleBucket = sampleBucket(for: row.sampleTime)
+            if let currentSampleBucket, currentSampleBucket != sampleBucket {
+                finishSample()
+            }
+
+            currentSampleBucket = sampleBucket
             currentSampleEntries.append(row.entry)
         }
 
@@ -370,10 +405,17 @@ final class ProcessTrafficMonitor: ObservableObject {
             } else {
                 hasOpenSample = true
             }
+            currentSampleBucket = nil
             return
         }
 
         guard let row = Self.parseCSVRow(line) else { return }
+        let sampleBucket = Self.sampleBucket(for: row.sampleTime)
+        if let currentSampleBucket, currentSampleBucket != sampleBucket {
+            finishCurrentSample()
+        }
+
+        currentSampleBucket = sampleBucket
         hasOpenSample = true
         currentSampleEntries.append(row.entry)
     }

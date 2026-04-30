@@ -177,6 +177,18 @@ func processTrafficParserBuildsEntryFromCSVRow() async throws {
 }
 
 @Test
+func processTrafficParserBuildsEntryFromCompactCSVRow() async throws {
+    let row = "14:27:35.295869,codex.35911,221648,11012845,"
+    let parsed = ProcessTrafficMonitor.parseCSVRow(row)
+
+    #expect(parsed?.sampleTime == "14:27:35.295869")
+    #expect(parsed?.entry.name == "codex")
+    #expect(parsed?.entry.pid == 35911)
+    #expect(parsed?.entry.downloadBytesPerSecond == 221648)
+    #expect(parsed?.entry.uploadBytesPerSecond == 11012845)
+}
+
+@Test
 func processTrafficParserGroupsRowsByHeadersAndSkipsBaselineSample() async throws {
     let csv = """
     time,,interface,state,bytes_in,bytes_out,rx_dupe,rx_ooo,re-tx,rtt_avg,rcvsize,tx_win,tc_class,tc_mgt,cc_algo,P,C,R,W,arch,
@@ -189,6 +201,25 @@ func processTrafficParserGroupsRowsByHeadersAndSkipsBaselineSample() async throw
     14:27:36.295872,medium.6,,,200,100,0,0,0,,,,,,,,,,,,
     14:27:36.295873,nettop.7,,,8000,8000,0,0,0,,,,,,,,,,,,
     14:27:36.295874,NetPulse.8,,,7000,7000,0,0,0,,,,,,,,,,,,
+    """
+
+    let samples = ProcessTrafficMonitor.parseDisplaySamples(from: csv)
+
+    #expect(samples.count == 1)
+    #expect(samples.first?.map(\.name) == ["large", "medium", "small"])
+    #expect(samples.first?.map(\.pid) == [4, 6, 3])
+}
+
+@Test
+func processTrafficParserGroupsCompactRowsBySampleTimeWhenHeaderIsNotRepeated() async throws {
+    let csv = """
+    time,,bytes_in,bytes_out,
+    14:27:35.295869,baseline.1,900000,100000,
+    14:27:35.295870,ignored.2,500000,100000,
+    14:27:36.295869,small.3,100,0,
+    14:27:36.295870,large.4,400,600,
+    14:27:36.295871,zero.5,0,0,
+    14:27:36.295872,medium.6,200,100,
     """
 
     let samples = ProcessTrafficMonitor.parseDisplaySamples(from: csv)
