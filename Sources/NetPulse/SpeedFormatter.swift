@@ -18,7 +18,7 @@ enum SpeedFormatter {
     }
 
     private static func format(_ bytesPerSecond: Double, unitStyle: UnitStyle, trimsTrailingZero: Bool) -> String {
-        let safeValue = max(0, bytesPerSecond)
+        let safeValue = bytesPerSecond.isFinite ? max(0, bytesPerSecond) : 0
         if safeValue < 1 {
             return unitStyle.zeroLabel
         }
@@ -35,6 +35,10 @@ enum SpeedFormatter {
         if unitStyle == .menuBar, value >= 999.5, unitIndex < units.count - 1 {
             value /= 1024
             unitIndex += 1
+        }
+
+        if unitStyle == .menuBar, value >= 999.5, unitIndex == units.count - 1 {
+            return "999\(units[unitIndex])"
         }
 
         let decimals: Int

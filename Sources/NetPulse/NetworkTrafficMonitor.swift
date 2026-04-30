@@ -8,6 +8,7 @@ final class NetworkTrafficMonitor: ObservableObject {
     @Published private(set) var connectionLabel = "检查中"
     @Published private(set) var interfaceSummary = "--"
     @Published private(set) var menuBarTitle = "离线"
+    @Published private(set) var menuBarContent = MenuBarStatusContent.status("离线")
     @Published private(set) var history: [TrafficPoint] = []
     @Published private(set) var availableInterfaces: [InterfaceOption] = []
     @Published private(set) var sampledInterfaces: [InterfaceOption] = []
@@ -57,6 +58,7 @@ final class NetworkTrafficMonitor: ObservableObject {
 
     func restoreCachedDisplayState(menuBarTitle: String, connectionLabel: String, interfaceSummary: String) {
         self.menuBarTitle = menuBarTitle
+        self.menuBarContent = MenuBarStatusContent.restored(title: menuBarTitle, displayMode: menuBarDisplayMode)
         self.connectionLabel = connectionLabel
         self.interfaceSummary = interfaceSummary
     }
@@ -151,24 +153,16 @@ final class NetworkTrafficMonitor: ObservableObject {
     }
 
     private func refreshMenuBarTitle() {
-        if isSleeping {
-            menuBarTitle = "睡眠"
-            return
-        }
+        let content = MenuBarStatusContent.make(
+            isSleeping: isSleeping,
+            isNetworkAvailable: isNetworkAvailable,
+            displayMode: menuBarDisplayMode,
+            downloadBytesPerSecond: downloadBytesPerSecond,
+            uploadBytesPerSecond: uploadBytesPerSecond
+        )
 
-        if !isNetworkAvailable {
-            menuBarTitle = "离线"
-            return
-        }
-
-        switch menuBarDisplayMode {
-        case .both:
-            menuBarTitle = "↓\(SpeedFormatter.menuBar(downloadBytesPerSecond)) ↑\(SpeedFormatter.menuBar(uploadBytesPerSecond))"
-        case .downloadOnly:
-            menuBarTitle = SpeedFormatter.menuBar(downloadBytesPerSecond)
-        case .uploadOnly:
-            menuBarTitle = SpeedFormatter.menuBar(uploadBytesPerSecond)
-        }
+        menuBarContent = content
+        menuBarTitle = content.legacyTitle
     }
 
     private func makeInterfaceSummary(from snapshot: InterfaceSnapshot) -> String {

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import NetPulse
@@ -15,6 +16,122 @@ func speedFormatterCompactsMenuBarOutput() async throws {
     #expect(SpeedFormatter.menuBar(0) == "0K/s")
     #expect(SpeedFormatter.detailed(0) == "0 K/s")
     #expect(SpeedFormatter.menuBar(1_073_741_824) == "1G/s")
+    #expect(SpeedFormatter.menuBar(999.4 * 1024 * 1024) == "999M/s")
+    #expect(SpeedFormatter.menuBar(999.5 * 1024 * 1024) == "1G/s")
+    #expect(SpeedFormatter.menuBar(Double.greatestFiniteMagnitude) == "999P/s")
+    #expect(SpeedFormatter.menuBar(Double.greatestFiniteMagnitude).count <= 6)
+}
+
+@Test
+func menuBarStatusContentBuildsTwoLineTrafficForBothDirections() async throws {
+    let content = MenuBarStatusContent.make(
+        isSleeping: false,
+        isNetworkAvailable: true,
+        displayMode: .both,
+        downloadBytesPerSecond: 1_048_576,
+        uploadBytesPerSecond: 1_536
+    )
+
+    #expect(content == .traffic(download: "1M/s", upload: "1.5K/s"))
+    #expect(content.displayTitle == "↓1M/s ↑1.5K/s")
+}
+
+@Test
+func menuBarStatusContentCollapsesOfflineAndSleepStates() async throws {
+    let offline = MenuBarStatusContent.make(
+        isSleeping: false,
+        isNetworkAvailable: false,
+        displayMode: .both,
+        downloadBytesPerSecond: 1_048_576,
+        uploadBytesPerSecond: 1_536
+    )
+    let sleeping = MenuBarStatusContent.make(
+        isSleeping: true,
+        isNetworkAvailable: true,
+        displayMode: .both,
+        downloadBytesPerSecond: 1_048_576,
+        uploadBytesPerSecond: 1_536
+    )
+
+    #expect(offline == .status("离线"))
+    #expect(sleeping == .status("睡眠"))
+}
+
+@Test
+func menuBarStatusContentRespectsSingleDirectionDisplayModes() async throws {
+    let download = MenuBarStatusContent.make(
+        isSleeping: false,
+        isNetworkAvailable: true,
+        displayMode: .downloadOnly,
+        downloadBytesPerSecond: 1_048_576,
+        uploadBytesPerSecond: 1_536
+    )
+    let upload = MenuBarStatusContent.make(
+        isSleeping: false,
+        isNetworkAvailable: true,
+        displayMode: .uploadOnly,
+        downloadBytesPerSecond: 1_048_576,
+        uploadBytesPerSecond: 1_536
+    )
+
+    #expect(download == .singleTraffic(direction: .download, speed: "1M/s"))
+    #expect(download.displayTitle == "↓1M/s")
+    #expect(upload == .singleTraffic(direction: .upload, speed: "1.5K/s"))
+    #expect(upload.displayTitle == "↑1.5K/s")
+}
+
+@Test
+func menuBarStatusContentRestoresCachedTitles() async throws {
+    #expect(
+        MenuBarStatusContent.restored(title: "↓1M/s ↑1.5K/s", displayMode: .both) ==
+            .traffic(download: "1M/s", upload: "1.5K/s")
+    )
+    #expect(
+        MenuBarStatusContent.restored(title: "1M/s", displayMode: .downloadOnly) ==
+            .singleTraffic(direction: .download, speed: "1M/s")
+    )
+    #expect(MenuBarStatusContent.restored(title: "离线", displayMode: .both) == .status("离线"))
+}
+
+@MainActor
+@Test
+func menuBarStatusLayoutKeepsTrafficWidthFixedAcrossSpeedLengths() async throws {
+    let contents: [MenuBarStatusContent] = [
+        .traffic(download: "3.3K/s", upload: "6.8K/s"),
+        .traffic(download: "6K/s", upload: "185K/s"),
+        .traffic(download: "18.7K/s", upload: "440K/s"),
+        .traffic(download: "99.9K/s", upload: "99.9P/s"),
+    ]
+    let widths = contents.map(MenuBarStatusLayout.itemLength(for:))
+
+    #expect(Set(widths).count == 1)
+}
+
+@MainActor
+@Test
+func menuBarStatusLayoutKeepsSingleDirectionWidthFixedAcrossSpeedLengths() async throws {
+    let contents: [MenuBarStatusContent] = [
+        .singleTraffic(direction: .download, speed: "3.3K/s"),
+        .singleTraffic(direction: .download, speed: "18.7K/s"),
+        .singleTraffic(direction: .download, speed: "440K/s"),
+        .singleTraffic(direction: .download, speed: "99.9P/s"),
+    ]
+    let widths = contents.map(MenuBarStatusLayout.itemLength(for:))
+
+    #expect(Set(widths).count == 1)
+}
+
+@MainActor
+@Test
+func menuBarStatusLayoutCollapsesOfflineAndSleepWidth() async throws {
+    let trafficWidth = MenuBarStatusLayout.itemLength(
+        for: .traffic(download: "3.3K/s", upload: "6.8K/s")
+    )
+    let offlineWidth = MenuBarStatusLayout.itemLength(for: .status("离线"))
+    let sleepWidth = MenuBarStatusLayout.itemLength(for: .status("睡眠"))
+
+    #expect(trafficWidth > offlineWidth)
+    #expect(trafficWidth > sleepWidth)
 }
 
 @Test
@@ -57,4 +174,53 @@ func processTrafficParserBuildsEntryFromCSVRow() async throws {
     #expect(parsed?.entry.pid == 35911)
     #expect(parsed?.entry.downloadBytesPerSecond == 221648)
     #expect(parsed?.entry.uploadBytesPerSecond == 11012845)
+}
+
+@Test
+func processTrafficParserGroupsRowsByHeadersAndSkipsBaselineSample() async throws {
+    let csv = """
+    time,,interface,state,bytes_in,bytes_out,rx_dupe,rx_ooo,re-tx,rtt_avg,rcvsize,tx_win,tc_class,tc_mgt,cc_algo,P,C,R,W,arch,
+    14:27:35.295869,baseline.1,,,900000,100000,0,0,0,,,,,,,,,,,,
+    14:27:35.295870,ignored.2,,,500000,100000,0,0,0,,,,,,,,,,,,
+    time,,interface,state,bytes_in,bytes_out,rx_dupe,rx_ooo,re-tx,rtt_avg,rcvsize,tx_win,tc_class,tc_mgt,cc_algo,P,C,R,W,arch,
+    14:27:36.295869,small.3,,,100,0,0,0,0,,,,,,,,,,,,
+    14:27:36.295870,large.4,,,400,600,0,0,0,,,,,,,,,,,,
+    14:27:36.295871,zero.5,,,0,0,0,0,0,,,,,,,,,,,,
+    14:27:36.295872,medium.6,,,200,100,0,0,0,,,,,,,,,,,,
+    14:27:36.295873,nettop.7,,,8000,8000,0,0,0,,,,,,,,,,,,
+    14:27:36.295874,NetPulse.8,,,7000,7000,0,0,0,,,,,,,,,,,,
+    """
+
+    let samples = ProcessTrafficMonitor.parseDisplaySamples(from: csv)
+
+    #expect(samples.count == 1)
+    #expect(samples.first?.map(\.name) == ["large", "medium", "small"])
+    #expect(samples.first?.map(\.pid) == [4, 6, 3])
+}
+
+@Test
+func settingsPanelLayoutShrinksToVisibleFrameWhenPreferredHeightDoesNotFit() async throws {
+    let visibleFrame = NSRect(x: 0, y: 80, width: 1440, height: 720)
+    let statusItemFrame = NSRect(x: 980, y: 812, width: 120, height: 22)
+    let frame = SettingsPanelLayout.panelFrame(
+        relativeTo: statusItemFrame,
+        visibleFrame: visibleFrame
+    )
+
+    #expect(frame.height == visibleFrame.height - (SettingsPanelLayout.edgePadding * 2))
+    #expect(frame.minY >= visibleFrame.minY + SettingsPanelLayout.edgePadding)
+    #expect(frame.maxY <= visibleFrame.maxY - SettingsPanelLayout.edgePadding)
+}
+
+@Test
+func settingsPanelLayoutKeepsPreferredHeightWhenVisibleFrameHasRoom() async throws {
+    let visibleFrame = NSRect(x: 0, y: 0, width: 1440, height: 1000)
+    let statusItemFrame = NSRect(x: 980, y: 1010, width: 120, height: 22)
+    let frame = SettingsPanelLayout.panelFrame(
+        relativeTo: statusItemFrame,
+        visibleFrame: visibleFrame
+    )
+
+    #expect(frame.height == SettingsPanelLayout.preferredSize.height)
+    #expect(frame.maxY <= visibleFrame.maxY - SettingsPanelLayout.edgePadding)
 }

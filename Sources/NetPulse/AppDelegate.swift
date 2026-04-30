@@ -7,6 +7,50 @@ private final class FloatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+enum SettingsPanelLayout {
+    static let preferredSize = NSSize(width: 392, height: 800)
+    static let edgePadding: CGFloat = 8
+    static let statusItemGap: CGFloat = 8
+
+    static func panelFrame(
+        relativeTo statusItemFrame: NSRect,
+        preferredSize: NSSize = SettingsPanelLayout.preferredSize,
+        visibleFrame: NSRect,
+        edgePadding: CGFloat = SettingsPanelLayout.edgePadding,
+        gap: CGFloat = SettingsPanelLayout.statusItemGap
+    ) -> NSRect {
+        let safeMinX = visibleFrame.minX + edgePadding
+        let safeMaxX = visibleFrame.maxX - edgePadding
+        let safeMinY = visibleFrame.minY + edgePadding
+        let safeMaxY = visibleFrame.maxY - edgePadding
+        let availableHeight = max(0, safeMaxY - safeMinY)
+        let panelHeight = min(preferredSize.height, availableHeight)
+
+        let originX = clamped(
+            statusItemFrame.midX - (preferredSize.width / 2),
+            lowerBound: safeMinX,
+            upperBound: safeMaxX - preferredSize.width
+        )
+        let originY = clamped(
+            statusItemFrame.minY - panelHeight - gap,
+            lowerBound: safeMinY,
+            upperBound: safeMaxY - panelHeight
+        )
+
+        return NSRect(
+            x: originX,
+            y: originY,
+            width: preferredSize.width,
+            height: panelHeight
+        )
+    }
+
+    private static func clamped(_ value: CGFloat, lowerBound: CGFloat, upperBound: CGFloat) -> CGFloat {
+        guard lowerBound <= upperBound else { return lowerBound }
+        return min(max(value, lowerBound), upperBound)
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let preferences = AppPreferences()
@@ -17,15 +61,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsPanel: FloatingPanel?
     private var statusItem: NSStatusItem?
     private weak var statusItemIconView: NSImageView?
-    private weak var statusItemTitleLabel: NSTextField?
+    private weak var statusItemTrafficStackView: NSStackView?
+    private weak var statusItemSingleTrafficStackView: NSStackView?
+    private weak var statusItemStatusLabel: NSTextField?
+    private weak var statusItemDownloadSpeedLabel: NSTextField?
+    private weak var statusItemUploadSpeedLabel: NSTextField?
+    private weak var statusItemSingleDirectionLabel: NSTextField?
+    private weak var statusItemSingleSpeedLabel: NSTextField?
+    private var statusItemTrafficWidthConstraint: NSLayoutConstraint?
+    private var statusItemSingleTrafficWidthConstraint: NSLayoutConstraint?
     private var cancellables = Set<AnyCancellable>()
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
-    private let statusItemIconSize = NSSize(width: 16, height: 16)
-    private let statusItemAdaptiveWidthStep: CGFloat = 10
-    private let statusItemContentLeadingPadding: CGFloat = 6
-    private let statusItemContentTrailingPadding: CGFloat = 6
-    private let statusItemContentSpacing: CGFloat = 5
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         trafficMonitor.menuBarDisplayMode = preferences.menuBarDisplayMode
@@ -38,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         configureSettingsPanel()
         configureStatusItem()
-        bindMenuBarTitle()
+        bindMenuBarContent()
         bindPreferences()
         bindLifecycleEvents()
         trafficMonitor.start()
@@ -62,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         let panel = FloatingPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 392, height: 800),
+            contentRect: NSRect(origin: .zero, size: SettingsPanelLayout.preferredSize),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -91,15 +138,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.title = ""
         button.image = nil
         configureStatusItemContent(in: button)
-        applyStatusTitle(trafficMonitor.menuBarTitle, to: button)
+        applyStatusContent(trafficMonitor.menuBarContent, to: button)
     }
 
-    private func bindMenuBarTitle() {
-        trafficMonitor.$menuBarTitle
+    private func bindMenuBarContent() {
+        trafficMonitor.$menuBarContent
             .receive(on: RunLoop.main)
-            .sink { [weak self] title in
+            .sink { [weak self] content in
                 guard let button = self?.statusItem?.button else { return }
-                self?.applyStatusTitle(title, to: button)
+                self?.applyStatusContent(content, to: button)
             }
             .store(in: &cancellables)
 
@@ -125,7 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] displayMode in
                 self?.trafficMonitor.menuBarDisplayMode = displayMode
                 guard let button = self?.statusItem?.button else { return }
-                self?.applyStatusTitle(self?.trafficMonitor.menuBarTitle ?? "", to: button)
+                self?.applyStatusContent(self?.trafficMonitor.menuBarContent ?? .status("离线"), to: button)
             }
             .store(in: &cancellables)
 
@@ -213,46 +260,136 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureStatusItemContent(in button: NSStatusBarButton) {
         button.subviews.forEach { $0.removeFromSuperview() }
+        statusItemTrafficWidthConstraint = nil
+        statusItemSingleTrafficWidthConstraint = nil
 
         let iconView = NSImageView()
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.imageScaling = .scaleProportionallyDown
         iconView.image = statusItemIconImage()
 
-        let titleLabel = NSTextField(labelWithString: "")
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.alignment = .left
-        titleLabel.lineBreakMode = .byClipping
-        titleLabel.maximumNumberOfLines = 1
+        let downloadRow = makeStatusTrafficRow(direction: .download)
+        let uploadRow = makeStatusTrafficRow(direction: .upload)
 
-        let stackView = NSStackView(views: [iconView, titleLabel])
+        let trafficStackView = NSStackView(views: [downloadRow.row, uploadRow.row])
+        trafficStackView.translatesAutoresizingMaskIntoConstraints = false
+        trafficStackView.orientation = .vertical
+        trafficStackView.alignment = .leading
+        trafficStackView.distribution = .fillEqually
+        trafficStackView.spacing = MenuBarStatusLayout.trafficLineSpacing
+        trafficStackView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        trafficStackView.setContentHuggingPriority(.required, for: .horizontal)
+
+        let singleRow = makeStatusTrafficRow(direction: .download)
+        let singleTrafficStackView = singleRow.row
+        singleTrafficStackView.translatesAutoresizingMaskIntoConstraints = false
+        singleTrafficStackView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        singleTrafficStackView.setContentHuggingPriority(.required, for: .horizontal)
+        singleTrafficStackView.isHidden = true
+
+        let statusLabel = makeStatusItemLabel(font: MenuBarStatusLayout.statusFont)
+        statusLabel.isHidden = true
+
+        let stackView = NSStackView(views: [iconView, trafficStackView, singleTrafficStackView, statusLabel])
         stackView.translatesAutoresizingMaskIntoConstraints = false
         stackView.orientation = .horizontal
         stackView.alignment = .centerY
-        stackView.spacing = statusItemContentSpacing
+        stackView.spacing = MenuBarStatusLayout.contentSpacing
+        stackView.detachesHiddenViews = true
 
         button.addSubview(stackView)
 
+        let trafficWidthConstraint = trafficStackView.widthAnchor.constraint(equalToConstant: MenuBarStatusLayout.trafficRowWidth)
+        let singleTrafficWidthConstraint = singleTrafficStackView.widthAnchor.constraint(equalToConstant: MenuBarStatusLayout.trafficRowWidth)
+
         NSLayoutConstraint.activate([
-            iconView.widthAnchor.constraint(equalToConstant: statusItemIconSize.width),
-            iconView.heightAnchor.constraint(equalToConstant: statusItemIconSize.height),
-            stackView.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: statusItemContentLeadingPadding),
-            stackView.trailingAnchor.constraint(lessThanOrEqualTo: button.trailingAnchor, constant: -statusItemContentTrailingPadding),
+            iconView.widthAnchor.constraint(equalToConstant: MenuBarStatusLayout.iconSize.width),
+            iconView.heightAnchor.constraint(equalToConstant: MenuBarStatusLayout.iconSize.height),
+            trafficWidthConstraint,
+            singleTrafficWidthConstraint,
+            stackView.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: MenuBarStatusLayout.contentLeadingPadding),
+            stackView.trailingAnchor.constraint(lessThanOrEqualTo: button.trailingAnchor, constant: -MenuBarStatusLayout.contentTrailingPadding),
             stackView.centerYAnchor.constraint(equalTo: button.centerYAnchor),
         ])
 
         statusItemIconView = iconView
-        statusItemTitleLabel = titleLabel
+        statusItemTrafficStackView = trafficStackView
+        statusItemSingleTrafficStackView = singleTrafficStackView
+        statusItemStatusLabel = statusLabel
+        statusItemDownloadSpeedLabel = downloadRow.speedLabel
+        statusItemUploadSpeedLabel = uploadRow.speedLabel
+        statusItemSingleDirectionLabel = singleRow.directionLabel
+        statusItemSingleSpeedLabel = singleRow.speedLabel
+        statusItemTrafficWidthConstraint = trafficWidthConstraint
+        statusItemSingleTrafficWidthConstraint = singleTrafficWidthConstraint
     }
 
-    private func applyStatusTitle(_ title: String, to button: NSStatusBarButton) {
-        statusItemTitleLabel?.attributedStringValue = NSAttributedString(
-            string: title,
-            attributes: [
-                .font: statusItemFont,
-            ]
-        )
-        statusItem?.length = statusItemLength(for: title, displayMode: preferences.menuBarDisplayMode)
+    private func makeStatusTrafficRow(direction: MenuBarTrafficDirection) -> (
+        row: NSStackView,
+        directionLabel: NSTextField,
+        speedLabel: NSTextField
+    ) {
+        let directionLabel = makeStatusItemLabel(font: MenuBarStatusLayout.trafficDirectionFont, alignment: .center)
+        directionLabel.stringValue = direction.symbol
+
+        let speedLabel = makeStatusItemLabel(font: MenuBarStatusLayout.trafficFont, alignment: .right)
+
+        let row = NSStackView(views: [directionLabel, speedLabel])
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = MenuBarStatusLayout.trafficRowSpacing
+        row.setContentCompressionResistancePriority(.required, for: .horizontal)
+        row.setContentHuggingPriority(.required, for: .horizontal)
+
+        NSLayoutConstraint.activate([
+            directionLabel.widthAnchor.constraint(equalToConstant: MenuBarStatusLayout.trafficDirectionWidth),
+            speedLabel.widthAnchor.constraint(equalToConstant: MenuBarStatusLayout.trafficSpeedWidth),
+        ])
+
+        return (row, directionLabel, speedLabel)
+    }
+
+    private func makeStatusItemLabel(font: NSFont, alignment: NSTextAlignment = .left) -> NSTextField {
+        let label = NSTextField(labelWithString: "")
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.alignment = alignment
+        label.font = font
+        label.lineBreakMode = .byClipping
+        label.maximumNumberOfLines = 1
+        label.setContentCompressionResistancePriority(.required, for: .horizontal)
+        label.setContentHuggingPriority(.required, for: .horizontal)
+        return label
+    }
+
+    private func applyStatusContent(_ content: MenuBarStatusContent, to button: NSStatusBarButton) {
+        switch content {
+        case let .traffic(download, upload):
+            statusItemDownloadSpeedLabel?.stringValue = download
+            statusItemUploadSpeedLabel?.stringValue = upload
+            statusItemTrafficWidthConstraint?.constant = MenuBarStatusLayout.trafficRowWidth
+            statusItemTrafficStackView?.isHidden = false
+            statusItemSingleTrafficStackView?.isHidden = true
+            statusItemStatusLabel?.isHidden = true
+
+        case let .singleTraffic(direction, speed):
+            statusItemSingleDirectionLabel?.stringValue = direction.symbol
+            statusItemSingleSpeedLabel?.stringValue = speed
+            statusItemSingleTrafficWidthConstraint?.constant = MenuBarStatusLayout.trafficRowWidth
+            statusItemTrafficStackView?.isHidden = true
+            statusItemSingleTrafficStackView?.isHidden = false
+            statusItemStatusLabel?.isHidden = true
+
+        case let .status(title):
+            statusItemStatusLabel?.stringValue = title
+            statusItemTrafficStackView?.isHidden = true
+            statusItemSingleTrafficStackView?.isHidden = true
+            statusItemStatusLabel?.isHidden = false
+        }
+
+        button.toolTip = content.displayTitle
+        statusItem?.length = statusItemLength(for: content)
+        button.needsLayout = true
     }
 
     @objc
@@ -273,39 +410,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installOutsideClickMonitors()
     }
 
-    private func statusItemLength(for title: String, displayMode: MenuBarDisplayMode) -> CGFloat {
-        let minimumTemplate: String
-        switch displayMode {
-        case .both:
-            minimumTemplate = "↓999M/s ↑999M/s"
-        case .downloadOnly, .uploadOnly:
-            minimumTemplate = "999M/s"
-        }
-
-        let templateWidth = (minimumTemplate as NSString).size(withAttributes: [.font: statusItemFont]).width
-        let titleWidth = (title as NSString).size(withAttributes: [.font: statusItemFont]).width
-        let contentWidth = statusItemIconSize.width + statusItemContentSpacing
-        let horizontalPadding = statusItemContentLeadingPadding + statusItemContentTrailingPadding
-        let minimumWidth = ceil(templateWidth + contentWidth + horizontalPadding)
-        let requiredWidth = ceil(titleWidth + contentWidth + horizontalPadding)
-
-        guard requiredWidth > minimumWidth else {
-            return minimumWidth
-        }
-
-        let overflow = requiredWidth - minimumWidth
-        let steppedOverflow = ceil(overflow / statusItemAdaptiveWidthStep) * statusItemAdaptiveWidthStep
-        return minimumWidth + steppedOverflow
+    private func statusItemLength(for content: MenuBarStatusContent) -> CGFloat {
+        MenuBarStatusLayout.itemLength(for: content)
     }
 
     private func statusItemIconImage() -> NSImage? {
-        let iconImage = NSImage(size: statusItemIconSize)
+        let iconImage = NSImage(size: MenuBarStatusLayout.iconSize)
         iconImage.lockFocus()
         NSGraphicsContext.current?.imageInterpolation = .high
 
-        let canvas = NSRect(origin: .zero, size: statusItemIconSize)
-        let insetX = statusItemIconSize.width * 0.055
-        let insetY = statusItemIconSize.height * 0.065
+        let canvas = NSRect(origin: .zero, size: MenuBarStatusLayout.iconSize)
+        let insetX = MenuBarStatusLayout.iconSize.width * 0.055
+        let insetY = MenuBarStatusLayout.iconSize.height * 0.065
         let drawingRect = canvas.insetBy(dx: insetX, dy: insetY)
         let strokeColor = NSColor.labelColor
 
@@ -388,17 +504,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func positionSettingsPanel(relativeTo button: NSStatusBarButton, panel: NSPanel) {
         guard let buttonFrameOnScreen = statusItemScreenFrame() else { return }
 
-        let panelSize = panel.frame.size
         let screenFrame = button.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
-        let gap: CGFloat = 8
-
-        let originX = min(
-            max(buttonFrameOnScreen.midX - (panelSize.width / 2), screenFrame.minX + 8),
-            screenFrame.maxX - panelSize.width - 8
+        let panelFrame = SettingsPanelLayout.panelFrame(
+            relativeTo: buttonFrameOnScreen,
+            visibleFrame: screenFrame
         )
-        let originY = max(screenFrame.minY + 8, buttonFrameOnScreen.minY - panelSize.height - gap)
 
-        panel.setFrame(NSRect(x: originX, y: originY, width: panelSize.width, height: panelSize.height), display: false)
+        panel.setFrame(panelFrame, display: false)
     }
 
     private func closeSettingsPanel() {
@@ -407,7 +519,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         removeOutsideClickMonitors()
     }
 
-    private var statusItemFont: NSFont {
-        NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .semibold)
-    }
 }
