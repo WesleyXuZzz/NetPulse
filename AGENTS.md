@@ -111,5 +111,5 @@ swift test
 
 ## 仓库与忽略项
 
-- 当前目录未检测到 `.git` 元数据，可能是源码快照或尚未初始化 Git 仓库的工作目录。
+- 当前目录是 Git 工作目录，存在 `.git` 元数据。
 - `.gitignore` 已排除 `.build`、`dist`、DerivedData、SwiftPM 本地配置、`.netrc` 和常见 Xcode 用户数据。
