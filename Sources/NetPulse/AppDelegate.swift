@@ -51,6 +51,14 @@ enum SettingsPanelLayout {
     }
 }
 
+enum PanelDeferredRefreshPolicy {
+    static let delayNanoseconds: UInt64 = 250_000_000
+
+    static func shouldRun(isPanelVisible: Bool, isCancelled: Bool) -> Bool {
+        isPanelVisible && !isCancelled
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let preferences = AppPreferences()
@@ -75,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
+    private var panelPresentationTask: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         trafficMonitor.menuBarDisplayMode = preferences.menuBarDisplayMode
@@ -96,6 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        cancelDeferredPanelRefresh()
         appTrafficHistoryStore.flush()
         trafficMonitor.stop()
         processTrafficMonitor.stop()
@@ -282,8 +292,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                self?.trafficMonitor.refreshNow()
-                self?.launchAtLoginController.refreshStatus()
+                self?.refreshForAppActivation()
                 Task { [weak self] in
                     await self?.downloadAlertMonitor.refreshAuthorizationStatus()
                 }
@@ -434,14 +443,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        trafficMonitor.refreshNow()
-        launchAtLoginController.refreshStatus()
-        processTrafficMonitor.startWarmSampling()
-        processTrafficMonitor.refreshFreshnessState()
+        cancelDeferredPanelRefresh()
         positionSettingsPanel(relativeTo: button, panel: settingsPanel)
         settingsPanel.orderFrontRegardless()
         settingsPanel.makeKey()
         installOutsideClickMonitors()
+        scheduleDeferredPanelRefresh()
     }
 
     private func statusItemLength(for content: MenuBarStatusContent) -> CGFloat {
@@ -548,6 +555,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func closeSettingsPanel() {
+        cancelDeferredPanelRefresh()
         settingsPanel?.orderOut(nil)
         removeOutsideClickMonitors()
         updateProcessTrafficSampling()
@@ -559,6 +567,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if processTrafficMonitor.samplingState != .idle {
             processTrafficMonitor.stop(clearEntries: false)
         }
+    }
+
+    private func scheduleDeferredPanelRefresh() {
+        panelPresentationTask?.cancel()
+        panelPresentationTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: PanelDeferredRefreshPolicy.delayNanoseconds)
+            } catch {
+                return
+            }
+
+            guard let self else { return }
+            guard PanelDeferredRefreshPolicy.shouldRun(
+                isPanelVisible: self.settingsPanel?.isVisible == true,
+                isCancelled: Task.isCancelled
+            ) else {
+                return
+            }
+
+            self.trafficMonitor.refreshNowIfStale(maxAge: self.panelRefreshMaxAge)
+            self.launchAtLoginController.refreshStatus()
+            self.processTrafficMonitor.startWarmSampling()
+            self.processTrafficMonitor.refreshFreshnessState()
+            self.panelPresentationTask = nil
+        }
+    }
+
+    private func cancelDeferredPanelRefresh() {
+        panelPresentationTask?.cancel()
+        panelPresentationTask = nil
+    }
+
+    private func refreshForAppActivation() {
+        if settingsPanel?.isVisible == true {
+            scheduleDeferredPanelRefresh()
+            return
+        }
+
+        trafficMonitor.refreshNowIfStale(maxAge: panelRefreshMaxAge)
+        launchAtLoginController.refreshStatus()
+    }
+
+    private var panelRefreshMaxAge: TimeInterval {
+        max(0.75, trafficMonitor.samplingInterval * 1.5)
     }
 
     private func showTrafficHistoryWindow() {

@@ -85,12 +85,35 @@ enum InterfaceSnapshotReader {
 }
 
 private enum InterfaceDisplayNameResolver {
+    private static let cache = InterfaceDisplayNameCache()
+
     static func resolve(ids: Set<String>) -> [InterfaceOption] {
-        let resolvedOptions = loadOptions()
+        let resolvedOptions = cache.options()
 
         return ids.sorted().map { id in
             resolvedOptions[id] ?? InterfaceOption(id: id, displayName: id, summaryName: id)
         }
+    }
+}
+
+private final class InterfaceDisplayNameCache: @unchecked Sendable {
+    private let cacheDuration: TimeInterval = 5
+    private let lock = NSLock()
+    private var cachedOptions: [String: InterfaceOption] = [:]
+    private var cachedAt: Date?
+
+    func options(now: Date = Date()) -> [String: InterfaceOption] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if let cachedAt, now.timeIntervalSince(cachedAt) < cacheDuration {
+            return cachedOptions
+        }
+
+        let refreshedOptions = Self.loadOptions()
+        cachedOptions = refreshedOptions
+        cachedAt = now
+        return refreshedOptions
     }
 
     private static func loadOptions() -> [String: InterfaceOption] {

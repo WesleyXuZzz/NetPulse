@@ -12,6 +12,8 @@ struct StatusPopoverView: View {
     @State private var showsFullInterfaceSummary = false
 
     var body: some View {
+        let chartSnapshot = StatusChartSnapshot(points: monitor.history)
+
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top) {
@@ -92,7 +94,7 @@ struct StatusPopoverView: View {
                     )
                 }
 
-                if let peakSummary {
+                if let peakSummary = chartSnapshot.peakSummary {
                     HStack {
                         Text("峰值")
                             .foregroundStyle(.secondary)
@@ -103,7 +105,7 @@ struct StatusPopoverView: View {
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                 }
 
-                Chart(chartHistory) { point in
+                Chart(chartSnapshot.points) { point in
                     LineMark(
                         x: .value("时间", point.timestamp),
                         y: .value("下载", point.downloadBytesPerSecond)
@@ -120,7 +122,7 @@ struct StatusPopoverView: View {
                     .foregroundStyle(Color(red: 0.15, green: 0.67, blue: 0.43).opacity(0.75))
                     .lineStyle(StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
 
-                    if let peakDownloadPoint, peakDownloadPoint.id == point.id, peakDownloadPoint.downloadBytesPerSecond > 0 {
+                    if chartSnapshot.isPeakDownload(point) {
                         PointMark(
                             x: .value("时间", point.timestamp),
                             y: .value("下载峰值", point.downloadBytesPerSecond)
@@ -129,7 +131,7 @@ struct StatusPopoverView: View {
                         .symbolSize(22)
                     }
 
-                    if let peakUploadPoint, peakUploadPoint.id == point.id, peakUploadPoint.uploadBytesPerSecond > 0 {
+                    if chartSnapshot.isPeakUpload(point) {
                         PointMark(
                             x: .value("时间", point.timestamp),
                             y: .value("上传峰值", point.uploadBytesPerSecond)
@@ -138,7 +140,7 @@ struct StatusPopoverView: View {
                         .symbolSize(18)
                     }
                 }
-                .chartYScale(domain: 0...chartUpperBound)
+                .chartYScale(domain: 0...chartSnapshot.upperBound)
                 .chartXAxis(.hidden)
                 .chartYAxis {
                     AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
@@ -436,15 +438,57 @@ struct StatusPopoverView: View {
         .padding(.top, 2)
     }
 
-    private var chartHistory: [TrafficPoint] {
-        let points = monitor.history
+}
+
+struct StatusChartSnapshot {
+    let points: [TrafficPoint]
+    let upperBound: Double
+    let peakSummary: String?
+    private let peakDownloadPointID: UUID?
+    private let peakUploadPointID: UUID?
+
+    init(points rawPoints: [TrafficPoint]) {
+        let points = Self.smoothed(points: rawPoints)
+        self.points = points
+
+        let peakDownloadPoint = points.max { $0.downloadBytesPerSecond < $1.downloadBytesPerSecond }
+        let peakUploadPoint = points.max { $0.uploadBytesPerSecond < $1.uploadBytesPerSecond }
+        let peakDownload = peakDownloadPoint?.downloadBytesPerSecond ?? 0
+        let peakUpload = peakUploadPoint?.uploadBytesPerSecond ?? 0
+        let maxSpeed = max(peakDownload, peakUpload)
+
+        if maxSpeed <= 0 {
+            upperBound = 1024
+        } else {
+            upperBound = max(maxSpeed * 1.15, 8 * 1024)
+        }
+
+        if peakDownload > 0 || peakUpload > 0 {
+            peakSummary = "↓ \(SpeedFormatter.shortPerSecond(peakDownload))  ↑ \(SpeedFormatter.shortPerSecond(peakUpload))"
+        } else {
+            peakSummary = nil
+        }
+
+        peakDownloadPointID = peakDownload > 0 ? peakDownloadPoint?.id : nil
+        peakUploadPointID = peakUpload > 0 ? peakUploadPoint?.id : nil
+    }
+
+    func isPeakDownload(_ point: TrafficPoint) -> Bool {
+        peakDownloadPointID == point.id
+    }
+
+    func isPeakUpload(_ point: TrafficPoint) -> Bool {
+        peakUploadPointID == point.id
+    }
+
+    private static func smoothed(points: [TrafficPoint]) -> [TrafficPoint] {
         guard points.count > 2 else { return points }
 
         return points.indices.map { index in
             let windowStart = max(0, index - 2)
-            let window = Array(points[windowStart...index])
-            let averageDownload = window.map(\.downloadBytesPerSecond).reduce(0, +) / Double(window.count)
-            let averageUpload = window.map(\.uploadBytesPerSecond).reduce(0, +) / Double(window.count)
+            let window = points[windowStart...index]
+            let averageDownload = window.reduce(0) { $0 + $1.downloadBytesPerSecond } / Double(window.count)
+            let averageUpload = window.reduce(0) { $0 + $1.uploadBytesPerSecond } / Double(window.count)
 
             return TrafficPoint(
                 id: points[index].id,
@@ -453,36 +497,6 @@ struct StatusPopoverView: View {
                 uploadBytesPerSecond: averageUpload
             )
         }
-    }
-
-    private var chartUpperBound: Double {
-        let maxSpeed = chartHistory.reduce(0.0) { partialResult, point in
-            max(partialResult, point.downloadBytesPerSecond, point.uploadBytesPerSecond)
-        }
-
-        if maxSpeed <= 0 {
-            return 1024
-        }
-
-        return max(maxSpeed * 1.15, 8 * 1024)
-    }
-
-    private var peakSummary: String? {
-        guard !chartHistory.isEmpty else { return nil }
-
-        let peakDownload = chartHistory.map(\.downloadBytesPerSecond).max() ?? 0
-        let peakUpload = chartHistory.map(\.uploadBytesPerSecond).max() ?? 0
-
-        guard peakDownload > 0 || peakUpload > 0 else { return nil }
-        return "↓ \(SpeedFormatter.shortPerSecond(peakDownload))  ↑ \(SpeedFormatter.shortPerSecond(peakUpload))"
-    }
-
-    private var peakDownloadPoint: TrafficPoint? {
-        chartHistory.max(by: { $0.downloadBytesPerSecond < $1.downloadBytesPerSecond })
-    }
-
-    private var peakUploadPoint: TrafficPoint? {
-        chartHistory.max(by: { $0.uploadBytesPerSecond < $1.uploadBytesPerSecond })
     }
 }
 

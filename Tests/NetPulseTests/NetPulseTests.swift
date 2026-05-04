@@ -171,6 +171,55 @@ func refreshIntervalOptionsExposeExpectedSeconds() async throws {
     #expect(RefreshIntervalOption.twoSeconds.interval == 2.0)
 }
 
+@Test
+func networkTrafficMonitorRefreshPolicyOnlyRefreshesMissingOrExpiredSamples() async throws {
+    let now = Date()
+
+    #expect(NetworkTrafficMonitor.shouldRefresh(lastSampledAt: nil, now: now, maxAge: 0.75))
+    #expect(NetworkTrafficMonitor.shouldRefresh(lastSampledAt: now, now: now, maxAge: 0))
+    #expect(!NetworkTrafficMonitor.shouldRefresh(lastSampledAt: now.addingTimeInterval(-0.5), now: now, maxAge: 0.75))
+    #expect(NetworkTrafficMonitor.shouldRefresh(lastSampledAt: now.addingTimeInterval(-0.75), now: now, maxAge: 0.75))
+}
+
+@Test
+func panelDeferredRefreshPolicyRequiresVisiblePanelAndActiveTask() async throws {
+    #expect(PanelDeferredRefreshPolicy.shouldRun(isPanelVisible: true, isCancelled: false))
+    #expect(!PanelDeferredRefreshPolicy.shouldRun(isPanelVisible: false, isCancelled: false))
+    #expect(!PanelDeferredRefreshPolicy.shouldRun(isPanelVisible: true, isCancelled: true))
+}
+
+@Test
+func statusChartSnapshotUsesSmoothedPointsForPeaksAndUpperBound() async throws {
+    let now = Date()
+    let ids = [UUID(), UUID(), UUID(), UUID()]
+    let snapshot = StatusChartSnapshot(points: [
+        TrafficPoint(id: ids[0], timestamp: now, downloadBytesPerSecond: 0, uploadBytesPerSecond: 0),
+        TrafficPoint(id: ids[1], timestamp: now.addingTimeInterval(1), downloadBytesPerSecond: 9_216, uploadBytesPerSecond: 0),
+        TrafficPoint(id: ids[2], timestamp: now.addingTimeInterval(2), downloadBytesPerSecond: 18_432, uploadBytesPerSecond: 3_072),
+        TrafficPoint(id: ids[3], timestamp: now.addingTimeInterval(3), downloadBytesPerSecond: 3_072, uploadBytesPerSecond: 12_288),
+    ])
+
+    #expect(snapshot.points.map(\.id) == ids)
+    #expect(snapshot.points[1].downloadBytesPerSecond == 4_608)
+    #expect(snapshot.points[2].uploadBytesPerSecond == 1_024)
+    #expect(snapshot.points[3].downloadBytesPerSecond == 10_240)
+    #expect(snapshot.points[3].uploadBytesPerSecond == 5_120)
+    #expect(snapshot.upperBound == 11_776)
+    #expect(snapshot.peakSummary == "↓ 10.0K/s  ↑ 5.0K/s")
+    #expect(snapshot.isPeakDownload(snapshot.points[3]))
+    #expect(snapshot.isPeakUpload(snapshot.points[3]))
+    #expect(!snapshot.isPeakDownload(snapshot.points[2]))
+}
+
+@Test
+func statusChartSnapshotUsesEmptyDefaults() async throws {
+    let snapshot = StatusChartSnapshot(points: [])
+
+    #expect(snapshot.points.isEmpty)
+    #expect(snapshot.upperBound == 1_024)
+    #expect(snapshot.peakSummary == nil)
+}
+
 @MainActor
 @Test
 func downloadAlertPreferencesDefaultToOneMegabyteOneMinuteAndTwentySeconds() async throws {

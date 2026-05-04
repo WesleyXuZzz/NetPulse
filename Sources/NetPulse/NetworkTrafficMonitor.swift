@@ -37,6 +37,7 @@ final class NetworkTrafficMonitor: ObservableObject {
 
     private var timer: Timer?
     private var previousSnapshot: InterfaceSnapshot?
+    private var lastSampledAt: Date?
     private var isNetworkAvailable = false
     private var isSleeping = false
     private var recentDownloadSamples: [Double] = []
@@ -78,9 +79,18 @@ final class NetworkTrafficMonitor: ObservableObject {
         sampleTraffic()
     }
 
+    func refreshNowIfStale(maxAge: TimeInterval, now: Date = Date()) {
+        guard Self.shouldRefresh(lastSampledAt: lastSampledAt, now: now, maxAge: maxAge) else {
+            return
+        }
+
+        sampleTraffic(now: now)
+    }
+
     func handleSystemWillSleep() {
         isSleeping = true
         previousSnapshot = nil
+        lastSampledAt = nil
         resetSmoothing()
         downloadBytesPerSecond = 0
         uploadBytesPerSecond = 0
@@ -105,7 +115,13 @@ final class NetworkTrafficMonitor: ObservableObject {
         }
     }
 
-    private func sampleTraffic() {
+    nonisolated static func shouldRefresh(lastSampledAt: Date?, now: Date, maxAge: TimeInterval) -> Bool {
+        guard maxAge > 0 else { return true }
+        guard let lastSampledAt else { return true }
+        return now.timeIntervalSince(lastSampledAt) >= maxAge
+    }
+
+    private func sampleTraffic(now: Date = Date()) {
         guard !isSleeping else { return }
 
         let snapshot = InterfaceSnapshotReader.read(selectedInterfaceName: selectedInterfaceName)
@@ -114,7 +130,7 @@ final class NetworkTrafficMonitor: ObservableObject {
             return
         }
 
-        let now = Date()
+        lastSampledAt = now
 
         let rawDownloadSpeed: Double
         let rawUploadSpeed: Double
@@ -291,7 +307,7 @@ final class NetworkTrafficMonitor: ObservableObject {
 
 extension NetworkTrafficMonitor: @unchecked Sendable {}
 
-struct TrafficPoint: Identifiable {
+struct TrafficPoint: Identifiable, Equatable {
     let id: UUID
     let timestamp: Date
     let downloadBytesPerSecond: Double
