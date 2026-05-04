@@ -92,7 +92,7 @@ final class AppPreferences: ObservableObject {
         selectedInterfaceName = defaults.string(forKey: Keys.selectedInterfaceName)
 
         let storedRefreshInterval = defaults.double(forKey: Keys.refreshIntervalOption)
-        refreshIntervalOption = RefreshIntervalOption(rawValue: storedRefreshInterval) ?? .halfSecond
+        refreshIntervalOption = RefreshIntervalOption(rawValue: storedRefreshInterval) ?? .oneSecond
 
         downloadAlertEnabled = defaults.bool(forKey: Keys.downloadAlertEnabled)
 

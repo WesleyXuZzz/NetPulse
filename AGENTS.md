@@ -21,10 +21,10 @@ swift test
 运行测试。当前测试主要覆盖速度格式化、刷新间隔选项、下载提醒默认偏好，以及 `nettop` CSV 输出解析。
 
 ```bash
-./scripts/package_app.sh
+./scripts/build-app.sh
 ```
 
-构建 release 版本并打包为 macOS 应用。输出位置为 `dist/NetPulse.app`，图标源文件为 `Resources/AppIcon.png`。
+默认构建 release 版本并打包为 macOS 应用。输出位置为 `dist/NetPulse.app`，图标源文件为 `Resources/AppIcon.png`。
 
 ## 目录结构
 
@@ -97,7 +97,7 @@ swift test
 - 登录自启功能需要在打包后的 `NetPulse.app` 中验证，不能只依赖 `swift run`。
 - 下载提醒相关变更需要同时考虑阈值、冷却、持续时长、通知授权状态和详情文案。
 - 打包脚本会生成 `dist/NetPulse.app`，并使用 ad-hoc codesign 签名。
-- `scripts/package_app.sh` 当前会删除并重建目标 app bundle；如果需要改动脚本，注意项目偏好中禁止批量删除文件或目录，应先和用户确认。
+- `scripts/build-app.sh` 当前会删除并重建目标 app bundle；如果需要改动脚本，注意项目偏好中禁止批量删除文件或目录，应先和用户确认。
 
 ## 验证记录
 
