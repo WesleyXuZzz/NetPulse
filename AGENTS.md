@@ -24,13 +24,13 @@ swift test
 ./scripts/build-app.sh
 ```
 
-默认构建 release 版本并打包为 macOS 应用。输出位置为 `dist/NetPulse.app`，图标源文件为 `Resources/AppIcon.png`。
+默认构建 release 版本并打包为 macOS DMG 安装包。输出位置为 `dist/NetPulse.dmg`，图标源文件为 `Resources/AppIcon.png`。如需只构建应用包，可运行 `./scripts/build-app.sh app`；如需 debug 构建，可追加 `--debug`。
 
 ## 目录结构
 
 - `Sources/NetPulse`：主应用源码，包含 AppKit 启动入口、SwiftUI 面板、网络采样、进程流量、通知提醒和登录自启逻辑。
 - `Tests/NetPulseTests`：Swift Testing 测试代码。
-- `scripts`：辅助脚本，包括 `.app` 打包脚本和 `.icns` 图标生成脚本。
+- `scripts`：辅助脚本，包括 DMG / `.app` 打包脚本和 `.icns` 图标生成脚本。
 - `Resources`：应用资源，目前包含打包时使用的 `AppIcon.png`。
 - `docs`：README 使用的 logo、banner 和截图素材。
 - `.build`：SwiftPM 构建产物，已被 `.gitignore` 排除。
@@ -96,7 +96,7 @@ swift test
 - 进程流量监控应保持“面板打开时启动、面板关闭时停止”的行为，避免后台持续运行 `nettop`。
 - 登录自启功能需要在打包后的 `NetPulse.app` 中验证，不能只依赖 `swift run`。
 - 下载提醒相关变更需要同时考虑阈值、冷却、持续时长、通知授权状态和详情文案。
-- 打包脚本会生成 `dist/NetPulse.app`，并使用 ad-hoc codesign 签名。
+- 打包脚本默认会生成 `dist/NetPulse.dmg`，并先生成使用 ad-hoc codesign 签名的 `dist/NetPulse.app`。
 - `scripts/build-app.sh` 当前会删除并重建目标 app bundle；如果需要改动脚本，注意项目偏好中禁止批量删除文件或目录，应先和用户确认。
 
 ## 验证记录

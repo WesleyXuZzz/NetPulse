@@ -3,22 +3,46 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT_INVOCATION="$0"
 APP_NAME="NetPulse"
-CONFIGURATION="${1:-release}"
+CONFIGURATION="release"
+TARGET="dmg"
 APP_BUNDLE="$PROJECT_DIR/dist/$APP_NAME.app"
+DMG_PATH="$PROJECT_DIR/dist/$APP_NAME.dmg"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 ICON_SOURCE="$PROJECT_DIR/Resources/AppIcon.png"
 
-case "$CONFIGURATION" in
-  debug|release) ;;
-  *)
-    echo "Unsupported configuration: $CONFIGURATION" >&2
-    echo "Usage: $0 [debug|release]" >&2
-    exit 1
-    ;;
-esac
+usage() {
+  echo "Usage: $SCRIPT_INVOCATION [app] [--debug]" >&2
+  echo "" >&2
+  echo "Examples:" >&2
+  echo "  $SCRIPT_INVOCATION              Build release DMG at dist/$APP_NAME.dmg" >&2
+  echo "  $SCRIPT_INVOCATION --debug      Build debug DMG at dist/$APP_NAME.dmg" >&2
+  echo "  $SCRIPT_INVOCATION app          Build release app at dist/$APP_NAME.app" >&2
+  echo "  $SCRIPT_INVOCATION app --debug  Build debug app at dist/$APP_NAME.app" >&2
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    app)
+      TARGET="app"
+      ;;
+    --debug)
+      CONFIGURATION="debug"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unsupported argument: $arg" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
 
 BIN_PATH="$(swift build --configuration "$CONFIGURATION" --package-path "$PROJECT_DIR" --show-bin-path)"
 
@@ -75,5 +99,28 @@ printf 'APPL????' > "$CONTENTS_DIR/PkgInfo"
 
 codesign --force --deep --sign - "$APP_BUNDLE" >/dev/null
 
-echo "Packaged $CONFIGURATION app:"
-echo "$APP_BUNDLE"
+if [[ "$TARGET" == "app" ]]; then
+  echo "Packaged $CONFIGURATION app:"
+  echo "$APP_BUNDLE"
+  exit 0
+fi
+
+DMG_STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/netpulse-dmg.XXXXXX")"
+cleanup() {
+  rm -rf "$DMG_STAGING_DIR"
+}
+trap cleanup EXIT
+
+cp -R "$APP_BUNDLE" "$DMG_STAGING_DIR/$APP_NAME.app"
+ln -s /Applications "$DMG_STAGING_DIR/Applications"
+
+rm -f "$DMG_PATH"
+hdiutil create \
+  -volname "$APP_NAME" \
+  -srcfolder "$DMG_STAGING_DIR" \
+  -ov \
+  -format UDZO \
+  "$DMG_PATH" >/dev/null
+
+echo "Packaged $CONFIGURATION DMG:"
+echo "$DMG_PATH"

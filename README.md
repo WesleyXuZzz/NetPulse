@@ -71,9 +71,9 @@ cd NetPulse
 ./scripts/build-app.sh
 ```
 
-打包完成后，将 `dist/NetPulse.app` 移动到 `/Applications` 或 `~/Applications`。
+打包完成后，打开 `dist/NetPulse.dmg`，将 `NetPulse.app` 拖拽到 Applications。
 
-`./scripts/build-app.sh` 默认使用 release 构建，并会重新生成 `dist/NetPulse.app`；如果该路径下已有旧的本地打包产物，会被新的应用包覆盖。
+`./scripts/build-app.sh` 默认使用 release 构建，并会重新生成 `dist/NetPulse.app` 和 `dist/NetPulse.dmg`；如果这些路径下已有旧的本地打包产物，会被新的产物覆盖。
 
 ### 方式二：直接运行源码
 
@@ -85,10 +85,23 @@ swift run
 
 ## 打包应用
 
-构建 macOS `.app`：
+构建 macOS 安装 DMG：
 
 ```bash
 ./scripts/build-app.sh
+```
+
+只构建 `.app`：
+
+```bash
+./scripts/build-app.sh app
+```
+
+构建 debug 版本：
+
+```bash
+./scripts/build-app.sh --debug
+./scripts/build-app.sh app --debug
 ```
 
 应用图标源文件：
@@ -97,13 +110,19 @@ swift run
 Resources/AppIcon.png
 ```
 
-打包后的应用输出位置：
+默认打包后的安装包输出位置：
+
+```bash
+dist/NetPulse.dmg
+```
+
+如果使用 `./scripts/build-app.sh app`，应用包输出位置为：
 
 ```bash
 dist/NetPulse.app
 ```
 
-你可以将 `NetPulse.app` 移动到 `/Applications` 或 `~/Applications` 后再使用。
+你可以打开 `NetPulse.dmg`，将 `NetPulse.app` 拖拽到 Applications 后再使用。
 
 如果你准备把项目发布到 GitHub，请通过 Git 跟踪源码文件，不要手动上传本地构建产物。仓库中的 `.gitignore` 已排除 `.build/` 和 `dist/`。
 
@@ -111,7 +130,7 @@ dist/NetPulse.app
 
 - `Sources/NetPulse`：主应用源码
 - `Resources/AppIcon.png`：打包时使用的图标源图
-- `scripts/build-app.sh`：macOS `.app` 打包脚本，默认使用 release 构建
+- `scripts/build-app.sh`：macOS DMG 打包脚本，默认使用 release 构建，也支持只构建 `.app`
 - `scripts/generate_app_icon.swift`：图标生成脚本
 - `Tests/NetPulseTests`：测试代码
 - `docs/`：README 使用的 logo、banner 和截图素材
