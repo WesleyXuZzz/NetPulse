@@ -24,7 +24,7 @@ swift test
 ./scripts/build-app.sh
 ```
 
-默认构建 release 版本并打包为 macOS DMG 安装包。输出位置为 `dist/NetPulse.dmg`，图标源文件为 `Resources/AppIcon.png`。如需只构建应用包，可运行 `./scripts/build-app.sh app`；如需 debug 构建，可追加 `--debug`。
+默认构建 release 版本并打包为 macOS DMG 安装包。输出位置为 `dist/net-pulse.dmg`，图标源文件为 `Resources/AppIcon.png`。如需只构建应用包，可运行 `./scripts/build-app.sh app`；如需 debug 构建，可追加 `--debug`。打包产物文件名使用 `net-pulse`，安装后 macOS 中显示的应用名称为“网速监控”。
 
 ## 目录结构
 
@@ -94,9 +94,9 @@ swift test
 - 修改菜单栏展示时，要注意状态栏宽度策略，避免频繁宽度跳变或裁切文本。
 - 修改采样间隔、网卡选择或睡眠/唤醒逻辑时，要考虑历史数据、平滑缓冲和上一帧快照是否需要重置。
 - 进程流量监控应保持“面板打开时启动、面板关闭时停止”的行为，避免后台持续运行 `nettop`。
-- 登录自启功能需要在打包后的 `NetPulse.app` 中验证，不能只依赖 `swift run`。
+- 登录自启功能需要在打包后的 `net-pulse.app` 中验证，不能只依赖 `swift run`。
 - 下载提醒相关变更需要同时考虑阈值、冷却、持续时长、通知授权状态和详情文案。
-- 打包脚本默认会生成 `dist/NetPulse.dmg`，并先生成使用 ad-hoc codesign 签名的 `dist/NetPulse.app`。
+- 打包脚本默认会生成 `dist/net-pulse.dmg`，并先生成使用 ad-hoc codesign 签名的 `dist/net-pulse.app`。
 - `scripts/build-app.sh` 当前会删除并重建目标 app bundle；如果需要改动脚本，注意项目偏好中禁止批量删除文件或目录，应先和用户确认。
 
 ## 验证记录

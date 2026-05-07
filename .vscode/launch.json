@@ -4,21 +4,21 @@
       "type": "swift",
       "request": "launch",
       "args": [],
-      "cwd": "${workspaceFolder:NetPulse}",
-      "name": "Debug NetPulse",
-      "target": "NetPulse",
+      "cwd": "${workspaceFolder}",
+      "name": "Debug net-pulse",
+      "target": "net-pulse",
       "configuration": "debug",
-      "preLaunchTask": "swift: Build Debug NetPulse"
+      "preLaunchTask": "swift: Build Debug net-pulse"
     },
     {
       "type": "swift",
       "request": "launch",
       "args": [],
-      "cwd": "${workspaceFolder:NetPulse}",
-      "name": "Release NetPulse",
-      "target": "NetPulse",
+      "cwd": "${workspaceFolder}",
+      "name": "Release net-pulse",
+      "target": "net-pulse",
       "configuration": "release",
-      "preLaunchTask": "swift: Build Release NetPulse"
+      "preLaunchTask": "swift: Build Release net-pulse"
     }
   ]
 }

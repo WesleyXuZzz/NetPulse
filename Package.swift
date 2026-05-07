@@ -4,13 +4,13 @@
 import PackageDescription
 
 let package = Package(
-    name: "NetPulse",
+    name: "net-pulse",
     platforms: [
         .macOS(.v13),
     ],
     products: [
         .executable(
-            name: "NetPulse",
+            name: "net-pulse",
             targets: ["NetPulse"]
         ),
     ],

@@ -17,7 +17,7 @@ final class LaunchAtLoginController: ObservableObject {
 
     func setEnabled(_ enabled: Bool) {
         guard isAvailable else {
-            detailText = "把 NetPulse.app 打包后再打开，这个选项才可用。"
+            detailText = "把网速监控.app 打包后再打开，这个选项才可用。"
             isEnabled = false
             return
         }
@@ -40,7 +40,7 @@ final class LaunchAtLoginController: ObservableObject {
         guard isAvailable else {
             isEnabled = false
             needsApproval = false
-            detailText = "先打包成 NetPulse.app，才能使用自动启动。"
+            detailText = "先打包成网速监控.app，才能使用自动启动。"
             return
         }
 
